@@ -16,7 +16,7 @@ if Config.DISCORD_WEBHOOK_URL:
 else:
     print(f"📢 Discord webhook available: No")
 
-class FutGGAPIExtinctMonitor:
+class FutGGExtinctMonitor:
     def __init__(self, db_path="fut_extinct_cards.db"):
         # Validate configuration on startup
         Config.validate_config()
@@ -817,5 +817,5 @@ class FutGGAPIExtinctMonitor:
 
 # Entry point
 if __name__ == "__main__":
-    monitor = FutGGAPIExtinctMonitor()
+    monitor = FutGGExtinctMonitor()
     monitor.run_complete_system()
