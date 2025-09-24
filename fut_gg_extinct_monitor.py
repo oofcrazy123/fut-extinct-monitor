@@ -178,10 +178,24 @@ class FutGGAPIExtinctMonitor:
     
     def fetch_players_from_api(self, page=1, sort="current_price"):
         """
-        Fetch players using FUT.GG API
+        Fetch players using FUT.GG API with proper browser headers
         """
         try:
             self.rotate_user_agent()
+            
+            # Add browser-like headers to avoid detection
+            headers = {
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Referer': 'https://www.fut.gg/players/',
+                'Origin': 'https://www.fut.gg',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+            }
+            self.session.headers.update(headers)
             
             url = f"{self.api_base_url}/players/v2/{self.platform_id}/"
             params = {
@@ -190,9 +204,15 @@ class FutGGAPIExtinctMonitor:
             }
             
             print(f"🌐 Fetching API page {page}: {url}")
-            response = self.session.get(url, params=params)
+            response = self.session.get(url, params=params, timeout=30)
             
-            if response.status_code != 200:
+            if response.status_code == 403:
+                print(f"🚫 BLOCKED: FUT.GG/Cloudflare is blocking requests (403)")
+                return None  # Return None to indicate blocking
+            elif response.status_code == 429:
+                print(f"⏰ RATE LIMITED: Too many requests (429)")
+                return None
+            elif response.status_code != 200:
                 print(f"❌ API request failed: {response.status_code}")
                 return []
             
@@ -337,7 +357,127 @@ class FutGGAPIExtinctMonitor:
             "📊 Database Synced"
         )
         
-        return total_saved
+    def scrape_extinct_zone_players(self):
+        """
+        Scrape players from the extinct zone (dynamically determined pages)
+        """
+        print("🚀 Starting extinct zone scraping...")
+        
+        # Find the current extinct boundary
+        last_extinct_page, total_extinct_estimated = self.find_extinct_boundary()
+        
+        if last_extinct_page == 0:
+            print("⚠️ No extinct players found in current market")
+            return 0
+        
+        # Now scrape all pages in the extinct zone
+        total_saved = 0
+        extinct_zone_cards = []
+        
+        for page in range(1, last_extinct_page + 1):
+            try:
+                print(f"📄 Scraping extinct zone page {page}/{last_extinct_page}...")
+                
+                cards = self.scrape_fut_gg_players_sorted(page)
+                if cards:
+                    # Only save cards that appear extinct
+                    extinct_cards = [card for card in cards if card.get('appears_extinct', False)]
+                    saved = self.save_cards_to_db(extinct_cards)
+                    total_saved += saved
+                    extinct_zone_cards.extend(extinct_cards)
+                    
+                    print(f"✅ Page {page}: Found {len(cards)} cards, {len(extinct_cards)} extinct, saved {saved} new")
+                else:
+                    print(f"⚠️ Page {page}: No cards found")
+                
+                # Short delay between pages
+                time.sleep(random.uniform(1, 2))
+                
+            except Exception as e:
+                print(f"❌ Error on extinct zone page {page}: {e}")
+                continue
+        
+        print(f"🎉 Extinct zone scraping complete!")
+        print(f"📊 Total extinct zone cards in database: {total_saved}")
+        
+        # Send notification about extinct zone discovery
+        self.send_notification_to_all(
+            f"🔍 Extinct Zone Analysis Complete!\n"
+            f"📊 Found {total_extinct_estimated} extinct players across {last_extinct_page} pages\n"
+            f"💾 Saved {total_saved} new cards to monitor\n"
+            f"🎯 Now focusing monitoring on extinct zone players",
+            "🔍 Extinct Zone Mapped"
+        )
+        
+    def scrape_fut_gg_players(self, page_num=1):
+        """
+        Scrape players from fut.gg players page (regular unsorted)
+        """
+        try:
+            self.rotate_user_agent()
+            
+            url = f'https://www.fut.gg/players/?page={page_num}'
+            print(f"🌐 Fetching: {url}")
+            response = self.session.get(url)
+            
+            if response.status_code != 200:
+                print(f"❌ Failed to get page {page_num}: {response.status_code}")
+                return []
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            cards = []
+            
+            # Look for player cards
+            player_links = soup.find_all('a', href=lambda x: x and '/players/' in str(x))
+            
+            print(f"🔗 Found {len(player_links)} player links")
+            
+            if len(player_links) == 0:
+                print("⚠️ WARNING: No player links found - website structure may have changed")
+                return []
+            
+            # Extract unique players
+            unique_players = {}
+            for link in player_links:
+                href = link.get('href', '')
+                if href not in unique_players:
+                    card_data = self.extract_player_data_from_link(link, soup)
+                    if card_data:
+                        unique_players[href] = card_data
+            
+            cards = list(unique_players.values())
+            
+            print(f"✅ Page {page_num}: Extracted {len(cards)} unique cards")
+            
+            return cards
+            
+        except Exception as e:
+            print(f"Error scraping page {page_num}: {e}")
+            return []
+    
+    def get_extinct_zone_cards_to_monitor(self, limit=50):
+        """Get cards from database that are likely in the extinct zone"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Prioritize recently added cards (likely from extinct zone)
+        cursor.execute('''
+            SELECT id, name, rating, position, club, nation, league, fut_gg_url, fut_gg_id
+            FROM cards 
+            ORDER BY created_at DESC, RANDOM()
+            LIMIT ?
+        ''', (limit,))
+        
+        cards = []
+        for row in cursor.fetchall():
+            cards.append({
+                'id': row[0], 'name': row[1], 'rating': row[2], 'position': row[3],
+                'club': row[4], 'nation': row[5], 'league': row[6], 
+                'fut_gg_url': row[7], 'fut_gg_id': row[8]
+            })
+        
+        conn.close()
+        return cards
     
     def get_players_to_monitor(self, limit=200):
         """Get players from database for monitoring"""
@@ -537,20 +677,42 @@ class FutGGAPIExtinctMonitor:
         print("🤖 Starting API-based extinct player monitoring...")
         
         cycle_count = 0
+        consecutive_failures = 0
         
         while True:
             try:
                 # Get players to monitor
-                players = self.get_players_to_monitor(self.batch_size * 4)  # Get more than one batch
+                players = self.get_players_to_monitor(self.batch_size * 4)
                 
                 if not players:
-                    print("❌ No players in database! Running sync...")
-                    self.sync_players_database(20)
-                    continue
+                    consecutive_failures += 1
+                    
+                    if consecutive_failures <= 3:
+                        print(f"❌ No players in database! Running sync... (attempt {consecutive_failures}/3)")
+                        synced = self.sync_players_database(20)
+                        
+                        if synced == 0:
+                            print(f"🚫 Sync failed - API access blocked. Waiting 10 minutes before retry...")
+                            time.sleep(600)  # Wait 10 minutes
+                            continue
+                        else:
+                            consecutive_failures = 0  # Reset on successful sync
+                            continue
+                    else:
+                        print(f"🛑 STOPPING: Unable to sync database after {consecutive_failures} attempts")
+                        self.send_notification_to_all(
+                            f"🛑 Monitor stopped!\n"
+                            f"❌ Unable to access FUT.GG API after multiple attempts\n"
+                            f"🚫 API appears to be blocked\n"
+                            f"💡 Consider using a VPS with different IP address",
+                            "🛑 Monitor Stopped"
+                        )
+                        break
                 
                 print(f"🔍 Monitoring {len(players)} players for extinct status...")
                 
                 extinct_found = 0
+                api_blocked = False
                 
                 # Process players in batches
                 for i in range(0, len(players), self.batch_size):
@@ -559,6 +721,11 @@ class FutGGAPIExtinctMonitor:
                     
                     # Check prices for this batch
                     price_results = self.check_prices_batch(ea_ids)
+                    
+                    # If price check failed (blocked), break out of monitoring
+                    if price_results is None:  # Blocked
+                        api_blocked = True
+                        break
                     
                     # Process results
                     for player in batch:
@@ -576,24 +743,30 @@ class FutGGAPIExtinctMonitor:
                             self.send_extinct_alert(player)
                             extinct_found += 1
                     
-                    # Short delay between batches
-                    time.sleep(random.uniform(1, 2))
+                    # Delay between batches
+                    time.sleep(random.uniform(2, 5))
+                
+                if api_blocked:
+                    print(f"🚫 Price API blocked during monitoring. Waiting 10 minutes...")
+                    time.sleep(600)  # Wait 10 minutes
+                    continue
                 
                 cycle_count += 1
+                consecutive_failures = 0  # Reset on successful monitoring
                 
                 if extinct_found > 0:
                     self.send_notification_to_all(
                         f"🔍 API monitoring cycle #{cycle_count} complete!\n"
                         f"📊 Checked {len(players)} players via API\n"
                         f"🔥 Found {extinct_found} extinct players\n"
-                        f"⏰ Next check in 2-5 minutes",
+                        f"⏰ Next check in 5-10 minutes",
                         "🔍 Cycle Complete"
                     )
                 else:
                     print(f"🔍 Cycle #{cycle_count} complete - no extinct players found")
                 
-                # Wait 2-5 minutes before next check (faster than HTML scraping)
-                wait_time = random.uniform(120, 300)  # 2-5 minutes
+                # Wait 5-10 minutes before next check
+                wait_time = random.uniform(300, 600)
                 print(f"💤 Cycle #{cycle_count} complete. Found {extinct_found} extinct players. Waiting {wait_time/60:.1f} minutes...")
                 time.sleep(wait_time)
                 
@@ -602,7 +775,7 @@ class FutGGAPIExtinctMonitor:
                 break
             except Exception as e:
                 print(f"Monitoring error: {e}")
-                time.sleep(60)
+                time.sleep(120)  # Wait 2 minutes on general error
     
     def run_complete_system(self):
         """Run the complete API-based extinct monitoring system"""

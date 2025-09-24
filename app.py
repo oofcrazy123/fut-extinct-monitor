@@ -37,7 +37,7 @@ def start_monitor():
             return
         
         try:
-            from fut_gg_extinct_monitor import FutGGAPIExtinctMonitor
+            from fut_gg_extinct_monitor import FutGGExtinctMonitor
             print("✅ Successfully imported FutGGExtinctMonitor class")
         except ImportError as e:
             print(f"❌ Failed to import FutGGExtinctMonitor class: {e}")
@@ -45,7 +45,7 @@ def start_monitor():
         
         print("🔧 Creating monitor instance...")
         try:
-            monitor = FutGGAPIExtinctMonitor()
+            monitor = FutGGExtinctMonitor()
             print("✅ Monitor instance created successfully")
         except Exception as e:
             print(f"❌ Failed to create monitor instance: {e}")
