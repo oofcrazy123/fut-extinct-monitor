@@ -271,6 +271,33 @@ class FutGGExtinctMonitor:
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
             
+            # DEBUG CODE - Check what HTML we actually receive
+            if page == 20:  # Only dump one page to avoid spam
+                try:
+                    with open('/opt/render/project/src/debug_page_20.html', 'w', encoding='utf-8') as f:
+                        f.write(response.text)
+                    print(f"🐛 DEBUG: Saved page {page} HTML to debug_page_20.html")
+                    
+                    # Check if EXTINCT appears anywhere in the raw HTML
+                    sample_html = response.text
+                    if 'EXTINCT' in sample_html.upper():
+                        print(f"🐛 DEBUG: Found EXTINCT in HTML!")
+                    else:
+                        print(f"🐛 DEBUG: No EXTINCT found in HTML")
+                        
+                    # Show first occurrence of price-related content
+                    import re
+                    price_matches = re.findall(r'.{0,100}(?:price|cost|coin|extinct).{0,100}', sample_html, re.IGNORECASE)
+                    if price_matches:
+                        print(f"🐛 DEBUG: Price-related HTML samples:")
+                        for i, match in enumerate(price_matches[:3]):  # Show first 3 matches
+                            print(f"🐛 DEBUG Sample {i+1}: {match[:200]}")
+                    else:
+                        print(f"🐛 DEBUG: No price-related content found in HTML")
+                        
+                except Exception as e:
+                    print(f"🐛 DEBUG: Error saving HTML: {e}")
+            
             soup = BeautifulSoup(response.content, 'html.parser')
             
             print(f"🐛 DEBUG Page {page}: Response status {response.status_code}, content length {len(response.content)}")
