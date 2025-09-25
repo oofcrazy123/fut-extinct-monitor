@@ -995,6 +995,10 @@ class FutGGExtinctMonitor:
             print("📄 Database needs players - starting extinct zone scraping...")
             scraped = self.scrape_extinct_zone_players()
             
+            # Fix the None issue by ensuring we have a number
+            if scraped is None:
+                scraped = 0
+                
             if scraped > 0:
                 print(f"✅ Scraped {scraped} players from extinct zone. Starting monitoring...")
             else:
