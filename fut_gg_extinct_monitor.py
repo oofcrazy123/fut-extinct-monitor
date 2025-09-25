@@ -1198,11 +1198,84 @@ class FutGGExtinctMonitor:
     def run_complete_system(self):
         """Run the complete extinct monitoring system using dynamic extinct zone detection"""
         print("🚀 Starting FUT.GG Extinct Player Monitor with Dynamic Zone Detection!")
+        print("🐛 DEBUG: run_complete_system called")
+        sys.stdout.flush()
+        
+        # Test mode - just try a simple request to fut.gg
+        if os.getenv('TEST_MODE') == 'true':
+            print("🧪 TEST MODE: Testing basic fut.gg connectivity...")
+            sys.stdout.flush()
+            try:
+                import requests
+                print("🧪 TEST: Making request to fut.gg...")
+                sys.stdout.flush()
+                
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                }
+                
+                response = requests.get('https://www.fut.gg/players/?page=1', headers=headers, timeout=15)
+                print(f"🧪 TEST: fut.gg responded with status {response.status_code}")
+                print(f"🧪 TEST: Response length: {len(response.content)} bytes")
+                sys.stdout.flush()
+                
+                # Test if we can find any player links
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(response.content, 'html.parser')
+                
+                # Test the specific selectors we're using
+                price_containers = soup.find_all('div', class_="flex items-center justify-center grow shrink-0 gap-[0.1em]")
+                print(f"🧪 TEST: Found {len(price_containers)} price containers")
+                
+                player_imgs = soup.find_all('img', alt=lambda x: x and ' - ' in str(x))
+                print(f"🧪 TEST: Found {len(player_imgs)} player images with alt text")
+                
+                # Show first few player images found
+                for i, img in enumerate(player_imgs[:5]):
+                    alt_text = img.get('alt', '')
+                    print(f"🧪 TEST: Player {i+1}: {alt_text}")
+                
+                sys.stdout.flush()
+                
+                # Test price-sorted page
+                print("🧪 TEST: Testing price-sorted page...")
+                sys.stdout.flush()
+                
+                sorted_response = requests.get('https://www.fut.gg/players/?page=1&sorts=current_price', headers=headers, timeout=15)
+                print(f"🧪 TEST: Price-sorted page status: {sorted_response.status_code}")
+                sys.stdout.flush()
+                
+                if len(price_containers) == 0:
+                    print("❌ TEST FAILED: No price containers found - HTML structure may have changed")
+                    print("🔄 FALLBACK: Will try alternative scraping method")
+                    sys.stdout.flush()
+                else:
+                    print("✅ TEST PASSED: fut.gg structure detected successfully")
+                    sys.stdout.flush()
+                    
+            except Exception as e:
+                print(f"❌ TEST FAILED: Cannot access fut.gg - {e}")
+                print("🔄 FALLBACK: Will try alternative scraping method")
+                sys.stdout.flush()
+                import traceback
+                traceback.print_exc()
+                sys.stdout.flush()
         
         # Send startup notification
+        print("🐛 DEBUG: About to send startup notification")
+        sys.stdout.flush()
         self.check_and_send_startup_notification()
+        print("🐛 DEBUG: Startup notification sent")
+        sys.stdout.flush()
         
         # Check current database state
+        print("🐛 DEBUG: Checking database state")
+        sys.stdout.flush()
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM cards')
@@ -1210,12 +1283,14 @@ class FutGGExtinctMonitor:
         conn.close()
         
         print(f"📊 Current cards in database: {card_count}")
+        sys.stdout.flush()
         
         # Check if we should skip scraping
         skip_scraping = os.getenv('SKIP_SCRAPING', 'false').lower() == 'true'
         
         if skip_scraping and card_count > 0:
             print("⚠️ SKIP_SCRAPING enabled - using existing database")
+            sys.stdout.flush()
             self.send_notification_to_all(
                 f"✅ Using existing database with {card_count:,} cards\n"
                 f"🎯 Starting dynamic extinct zone monitoring!",
@@ -1223,26 +1298,51 @@ class FutGGExtinctMonitor:
             )
         elif card_count < 100:
             print("📄 Database needs players - starting extinct zone scraping...")
+            sys.stdout.flush()
             
             # Use try/except to handle missing methods gracefully
             try:
+                print("🐛 DEBUG: Attempting extinct zone scraping...")
+                sys.stdout.flush()
                 scraped = self.scrape_extinct_zone_players()
                 # Ensure scraped is a number
                 scraped = scraped if scraped is not None else 0
+                print(f"🐛 DEBUG: Extinct zone scraping returned: {scraped}")
+                sys.stdout.flush()
             except AttributeError:
                 print("⚠️ scrape_extinct_zone_players method not found, using fallback")
+                sys.stdout.flush()
                 scraped = self.scrape_all_players(int(os.getenv('MAX_PAGES_TO_SCRAPE', 10)))
                 scraped = scraped if scraped is not None else 0
+                print(f"🐛 DEBUG: Fallback scraping returned: {scraped}")
+                sys.stdout.flush()
             except Exception as e:
                 print(f"⚠️ Error during scraping: {e}")
-                scraped = 0
+                sys.stdout.flush()
+                import traceback
+                traceback.print_exc()
+                sys.stdout.flush()
+                print("🔄 Trying fallback HTML scraping...")
+                sys.stdout.flush()
+                try:
+                    scraped = self.scrape_all_players(5)  # Just scrape 5 pages as fallback
+                    scraped = scraped if scraped is not None else 0
+                    print(f"🐛 DEBUG: Emergency fallback returned: {scraped}")
+                    sys.stdout.flush()
+                except Exception as e2:
+                    print(f"❌ Emergency fallback also failed: {e2}")
+                    sys.stdout.flush()
+                    scraped = 0
                 
             if scraped > 0:
                 print(f"✅ Scraped {scraped} players from extinct zone. Starting monitoring...")
+                sys.stdout.flush()
             else:
-                print("⚠️ No players scraped from extinct zone - will try monitoring anyway")
+                print("⚠️ No players scraped - will try monitoring anyway")
+                sys.stdout.flush()
         else:
             print(f"✅ Found {card_count:,} cards in database")
+            sys.stdout.flush()
             self.send_notification_to_all(
                 f"✅ Database ready with {card_count:,} cards\n"
                 f"🎯 Starting dynamic extinct zone monitoring!",
@@ -1251,16 +1351,31 @@ class FutGGExtinctMonitor:
         
         # Start the monitoring - use try/except for this too
         print("🔥 Starting dynamic extinct zone monitoring...")
+        sys.stdout.flush()
         try:
+            print("🐛 DEBUG: About to call monitor_extinct_zone()")
+            sys.stdout.flush()
             self.monitor_extinct_zone()
+            print("🐛 DEBUG: monitor_extinct_zone() returned")
+            sys.stdout.flush()
         except AttributeError:
             print("⚠️ monitor_extinct_zone method not found, using fallback monitoring")
+            sys.stdout.flush()
             self.run_extinct_monitoring()  # Use existing method as fallback
         except Exception as e:
             print(f"⚠️ Error in monitoring: {e}")
+            sys.stdout.flush()
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
             # Try fallback monitoring method
-            self.run_extinct_monitoring()
-
+            print("🔄 Trying fallback monitoring...")
+            sys.stdout.flush()
+            try:
+                self.run_extinct_monitoring()
+            except Exception as e2:
+                print(f"❌ Fallback monitoring also failed: {e2}")
+                sys.stdout.flush()
 
 # Entry point
 if __name__ == "__main__":
