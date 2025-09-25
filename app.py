@@ -3,6 +3,7 @@ from flask import Flask, render_template, jsonify, send_file, request
 import threading
 import time
 import os
+import sys
 from datetime import datetime
 import sqlite3
 
@@ -18,59 +19,100 @@ def start_monitor():
     global monitor, is_running
     
     print("📄 Attempting to start extinct monitor...")
+    sys.stdout.flush()
     print(f"📁 Current directory: {os.getcwd()}")
     print(f"📋 Files in directory: {os.listdir('.')}")
+    sys.stdout.flush()
     
     try:
         # Add delay to let Flask start properly
         print("⏳ Waiting 3 seconds for Flask to stabilize...")
+        sys.stdout.flush()
         time.sleep(3)
         
         print("📦 Attempting to import FutGGExtinctMonitor...")
+        sys.stdout.flush()
         
         # Try to import step by step
         try:
             import fut_gg_extinct_monitor
             print("✅ Successfully imported fut_gg_extinct_monitor module")
+            sys.stdout.flush()
         except ImportError as e:
             print(f"❌ Failed to import fut_gg_extinct_monitor: {e}")
+            sys.stdout.flush()
             return
         
         try:
             from fut_gg_extinct_monitor import FutGGExtinctMonitor
             print("✅ Successfully imported FutGGExtinctMonitor class")
+            sys.stdout.flush()
         except ImportError as e:
             print(f"❌ Failed to import FutGGExtinctMonitor class: {e}")
+            sys.stdout.flush()
             return
         
         print("🔧 Creating monitor instance...")
+        sys.stdout.flush()
         try:
             monitor = FutGGExtinctMonitor()
             print("✅ Monitor instance created successfully")
+            sys.stdout.flush()
         except Exception as e:
             print(f"❌ Failed to create monitor instance: {e}")
+            sys.stdout.flush()
             import traceback
             traceback.print_exc()
+            sys.stdout.flush()
             return
         
         print("✅ Monitor initialized, starting complete system...")
+        sys.stdout.flush()
         is_running = True
         
         print("🚀 Starting extinct monitoring...")
+        print("🐛 DEBUG: About to call run_complete_system()")
+        sys.stdout.flush()
+        
         try:
-            monitor.run_complete_system()
+            # Add a timeout wrapper to prevent infinite hanging
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Monitor startup timed out after 5 minutes")
+            
+            # Set 5 minute timeout for startup
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(300)  # 5 minutes
+            
+            try:
+                monitor.run_complete_system()
+                print("🐛 DEBUG: run_complete_system() returned")
+                sys.stdout.flush()
+            finally:
+                signal.alarm(0)  # Cancel timeout
+                
+        except TimeoutError as e:
+            print(f"⏰ TIMEOUT: {e}")
+            print("🐛 DEBUG: Monitor startup took too long, likely hung during boundary detection")
+            sys.stdout.flush()
+            is_running = False
         except Exception as e:
             print(f"❌ Error in run_complete_system: {e}")
+            sys.stdout.flush()
             import traceback
             traceback.print_exc()
+            sys.stdout.flush()
             is_running = False
         
     except Exception as e:
         print(f"❌ Unexpected monitor error: {e}")
+        sys.stdout.flush()
         is_running = False
         import traceback
         print("📋 Full error traceback:")
         traceback.print_exc()
+        sys.stdout.flush()
 
 @app.route('/')
 def home():
@@ -95,7 +137,7 @@ def home():
             <p><strong>Target:</strong> Extinct players on FUT.GG</p>
             <p><strong>Check Interval:</strong> Every 5-10 minutes</p>
             <p><strong>Alert Cooldown:</strong> 6 hours per card</p>
-            <p><strong>Monitoring:</strong> All player ratings</p>
+            <p><strong>Monitoring:</strong> Dynamic extinct zone detection</p>
         </div>
         
         <div style="background: #f0f8e8; padding: 20px; margin: 20px 0; border-radius: 8px;">
@@ -124,6 +166,13 @@ def home():
             <h3>🔧 Debug Info</h3>
             <p><strong>Monitor Thread Running:</strong> <span id="thread-status">Unknown</span></p>
             <p><strong>Environment Check:</strong> <span id="env-status">Checking...</span></p>
+            <p><strong>Debug Mode:</strong> Enhanced logging enabled</p>
+        </div>
+        
+        <div style="background: #e3f2fd; padding: 20px; margin: 20px 0; border-radius: 8px;">
+            <h3>🎯 Extinct Zone Detection</h3>
+            <p>Using dynamic price-sorted monitoring to focus on pages where extinct players appear first.</p>
+            <p><strong>Strategy:</strong> Monitor pages 1-40 of price-sorted list where extinct players concentrate</p>
         </div>
         
         <script>
@@ -273,7 +322,8 @@ def status():
             'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC'),
             'env_check': env_check,
             'has_token': bool(telegram_token),
-            'has_chat_id': bool(telegram_chat)
+            'has_chat_id': bool(telegram_chat),
+            'debug_mode': True
         })
     except Exception as e:
         return jsonify({
@@ -282,7 +332,8 @@ def status():
             'last_update': 'Error: ' + str(e),
             'env_check': '❌ Error',
             'has_token': False,
-            'has_chat_id': False
+            'has_chat_id': False,
+            'debug_mode': True
         })
 
 @app.route('/health')
@@ -296,7 +347,8 @@ def logs():
     return f"""
     <h1>Recent Activity</h1>
     <p>Monitor Running: {'🟢 Yes' if is_running else '🔴 No'}</p>
-    <p>Check the Render logs for detailed information.</p>
+    <p>Debug Mode: Enabled with enhanced logging</p>
+    <p>Check the Render logs for detailed information including extinct zone detection progress.</p>
     <a href="/">← Back to Dashboard</a>
     """
 
@@ -309,24 +361,30 @@ def keep_alive():
             if hostname != 'localhost':
                 requests.get(f"https://{hostname}/health", timeout=10)
                 print("📍 Keep-alive ping sent")
+                sys.stdout.flush()
         except Exception as e:
             print(f"Keep-alive error: {e}")
+            sys.stdout.flush()
         time.sleep(600)  # Ping every 10 minutes
 
 if __name__ == '__main__':
     print("🚀 Starting Flask app with extinct monitor...")
+    sys.stdout.flush()
     
     # Start monitor in background thread
     print("📄 Starting monitor thread...")
+    sys.stdout.flush()
     monitor_thread = threading.Thread(target=start_monitor, daemon=True)
     monitor_thread.start()
     
     # Start keep-alive thread
     print("📄 Starting keep-alive thread...")
+    sys.stdout.flush()
     keepalive_thread = threading.Thread(target=keep_alive, daemon=True)
     keepalive_thread.start()
     
     # Start Flask web interface
     port = int(os.environ.get('PORT', 5000))
     print(f"🌐 Starting web server on port {port}...")
+    sys.stdout.flush()
     app.run(host='0.0.0.0', port=port, debug=False)
