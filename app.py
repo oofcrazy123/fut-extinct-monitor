@@ -75,28 +75,12 @@ def start_monitor():
         sys.stdout.flush()
         
         try:
-            # Add a timeout wrapper to prevent infinite hanging
-            import signal
-            
-            def timeout_handler(signum, frame):
-                raise TimeoutError("Monitor startup timed out after 5 minutes")
-            
-            # Set 5 minute timeout for startup
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(300)  # 5 minutes
-            
-            try:
-                monitor.run_complete_system()
-                print("🐛 DEBUG: run_complete_system() returned")
-                sys.stdout.flush()
-            finally:
-                signal.alarm(0)  # Cancel timeout
-                
-        except TimeoutError as e:
-            print(f"⏰ TIMEOUT: {e}")
-            print("🐛 DEBUG: Monitor startup took too long, likely hung during boundary detection")
+            # Remove signal-based timeout (doesn't work in threads)
+            # Just call the monitor directly
+            monitor.run_complete_system()
+            print("🐛 DEBUG: run_complete_system() returned")
             sys.stdout.flush()
-            is_running = False
+                
         except Exception as e:
             print(f"❌ Error in run_complete_system: {e}")
             sys.stdout.flush()
