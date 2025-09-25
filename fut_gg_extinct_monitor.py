@@ -275,95 +275,102 @@ class FutGGExtinctMonitor:
             
             print(f"🐛 DEBUG Page {page}: Response status {response.status_code}, content length {len(response.content)}")
             
-            # Find the exact price containers as shown in your HTML
-            price_containers = soup.find_all('div', class_="flex items-center justify-center grow shrink-0 gap-[0.1em]")
-            print(f"🐛 DEBUG Page {page}: Found {len(price_containers)} price containers")
+            # Try multiple approaches to find the price boxes
+            price_containers = []
             
-            # Also find all player images for reference
+            # Approach 1: Try the exact class
+            price_containers = soup.find_all('div', class_="text-center text-[1.2em] font-din rounded-[0.35em] bg-gray-800 border-[0.1em] text-white whitespace-nowrap leading-[1.2em] flex px-[0.2em] items-center gap-[0.3em] w-max border-(--fill-color)")
+            print(f"🐛 DEBUG Page {page}: Approach 1 (exact class): Found {len(price_containers)} price containers")
+            
+            # Approach 2: Use partial class matching for key parts
+            if not price_containers:
+                price_containers = soup.find_all('div', class_=lambda x: x and 'text-center' in x and 'font-din' in x and 'bg-gray-800' in x)
+                print(f"🐛 DEBUG Page {page}: Approach 2 (partial class): Found {len(price_containers)} price containers")
+            
+            # Approach 3: Look for any div with the text "EXTINCT"
+            if not price_containers:
+                price_containers = soup.find_all('div', text=lambda x: x and 'EXTINCT' in str(x).upper())
+                print(f"🐛 DEBUG Page {page}: Approach 3 (EXTINCT text): Found {len(price_containers)} elements with EXTINCT")
+            
+            # Approach 4: Look for any element containing "EXTINCT"
+            if not price_containers:
+                price_containers = soup.find_all(text=lambda x: x and 'EXTINCT' in str(x).upper())
+                print(f"🐛 DEBUG Page {page}: Approach 4 (any EXTINCT): Found {len(price_containers)} text nodes with EXTINCT")
+            
+            # Also find all player images
             player_imgs = soup.find_all('img', alt=lambda x: x and ' - ' in str(x) and len(str(x).split(' - ')) >= 2)
             print(f"🐛 DEBUG Page {page}: Found {len(player_imgs)} player images")
             
-            # Create a mapping of players to their extinction status
             cards = []
             
-            # If we have both price containers and player images, try to match them
-            if price_containers and player_imgs:
-                print(f"🐛 DEBUG Page {page}: Attempting to match {len(player_imgs)} players with {len(price_containers)} price containers")
-                
-                for i, img in enumerate(player_imgs):
-                    try:
-                        alt_text = img.get('alt', '')
-                        parts = alt_text.split(' - ')
+            # Process each player image
+            for i, img in enumerate(player_imgs):
+                try:
+                    alt_text = img.get('alt', '')
+                    parts = alt_text.split(' - ')
+                    
+                    if len(parts) >= 2:
+                        player_name = parts[0].strip()
+                        try:
+                            rating = int(parts[1].strip())
+                        except ValueError:
+                            continue
                         
-                        if len(parts) >= 2:
-                            player_name = parts[0].strip()
-                            try:
-                                rating = int(parts[1].strip())
-                            except ValueError:
-                                continue
-                            
-                            # Try to find corresponding price container
-                            # They should be in similar positions or we can search around the player image
-                            is_extinct = False
-                            
-                            # Method 1: Check if there's a corresponding price container by index
-                            if i < len(price_containers):
-                                price_text = price_containers[i].get_text(strip=True).upper()
-                                is_extinct = 'EXTINCT' in price_text
-                                print(f"🐛 DEBUG Page {page}: Player {i} {player_name} - Price container text: '{price_text}' - Extinct: {is_extinct}")
-                            
-                            # Method 2: If method 1 doesn't work, search around the player image
-                            if not is_extinct:
-                                # Look in parent containers for price info
-                                parent = img.parent
-                                for _ in range(10):
-                                    if parent:
-                                        # Look for the specific price container class within this parent
-                                        price_container = parent.find('div', class_="flex items-center justify-center grow shrink-0 gap-[0.1em]")
-                                        if price_container:
-                                            price_text = price_container.get_text(strip=True).upper()
-                                            is_extinct = 'EXTINCT' in price_text
-                                            print(f"🐛 DEBUG Page {page}: Found price container for {player_name}: '{price_text}' - Extinct: {is_extinct}")
-                                            break
-                                        parent = parent.parent
-                                    else:
-                                        break
-                            
-                            # Try to find player URL
-                            player_url = ""
-                            link_parent = img.parent
-                            for _ in range(5):
-                                if link_parent:
-                                    link = link_parent.find('a', href=lambda x: x and '/players/' in str(x))
-                                    if link:
-                                        href = link.get('href', '')
-                                        if href.startswith('/'):
-                                            player_url = f"https://www.fut.gg{href}"
-                                        else:
-                                            player_url = href
-                                        break
-                                    link_parent = link_parent.parent
-                                else:
+                        # Look for "EXTINCT" text anywhere near this player
+                        is_extinct = False
+                        
+                        # Search in the entire parent container tree
+                        parent = img.parent
+                        for level in range(10):
+                            if parent:
+                                # Get all text in this container
+                                all_text = parent.get_text().upper()
+                                if 'EXTINCT' in all_text:
+                                    is_extinct = True
+                                    print(f"🐛 DEBUG Page {page}: Found EXTINCT for {player_name} at parent level {level}")
                                     break
-                            
-                            card_data = {
-                                'name': player_name,
-                                'rating': rating,
-                                'position': 'Unknown',
-                                'club': 'Unknown', 
-                                'nation': 'Unknown',
-                                'league': 'Unknown',
-                                'card_type': 'Gold' if rating >= 75 else 'Silver' if rating >= 65 else 'Bronze',
-                                'fut_gg_url': player_url,
-                                'appears_extinct': is_extinct,
-                                'fut_gg_id': self.extract_fut_gg_id(player_url) if player_url else None
-                            }
-                            
-                            cards.append(card_data)
-                            
-                    except Exception as e:
-                        print(f"🐛 DEBUG Page {page}: Error processing player {i}: {e}")
-                        continue
+                                parent = parent.parent
+                            else:
+                                break
+                        
+                        # Try to find player URL
+                        player_url = ""
+                        link_parent = img.parent
+                        for _ in range(5):
+                            if link_parent:
+                                link = link_parent.find('a', href=lambda x: x and '/players/' in str(x))
+                                if link:
+                                    href = link.get('href', '')
+                                    if href.startswith('/'):
+                                        player_url = f"https://www.fut.gg{href}"
+                                    else:
+                                        player_url = href
+                                    break
+                                link_parent = link_parent.parent
+                            else:
+                                break
+                        
+                        card_data = {
+                            'name': player_name,
+                            'rating': rating,
+                            'position': 'Unknown',
+                            'club': 'Unknown', 
+                            'nation': 'Unknown',
+                            'league': 'Unknown',
+                            'card_type': 'Gold' if rating >= 75 else 'Silver' if rating >= 65 else 'Bronze',
+                            'fut_gg_url': player_url,
+                            'appears_extinct': is_extinct,
+                            'fut_gg_id': self.extract_fut_gg_id(player_url) if player_url else None
+                        }
+                        
+                        cards.append(card_data)
+                        
+                        if is_extinct or i < 5:  # Show extinct players or first 5
+                            print(f"🐛 DEBUG Page {page}: Player {i+1}: {player_name} ({rating}) - Extinct: {is_extinct}")
+                    
+                except Exception as e:
+                    print(f"🐛 DEBUG Page {page}: Error processing player {i}: {e}")
+                    continue
             
             extinct_count = sum(1 for c in cards if c.get('appears_extinct', False))
             print(f"📄 Page {page}: Found {len(cards)} cards, {extinct_count} appear extinct")
