@@ -275,67 +275,63 @@ class FutGGExtinctMonitor:
             
             print(f"🐛 DEBUG Page {page}: Response status {response.status_code}, content length {len(response.content)}")
             
-            # Look for the specific price container structure that contains either prices or "EXTINCT"
-            price_containers = soup.find_all('div', class_="flex items-center justify-center grow shrink-0 gap-[0.1em]")
-            print(f"🐛 DEBUG Page {page}: Found {len(price_containers)} price containers")
+            # We know player images exist, so let's use those and find price info near them
+            player_imgs = soup.find_all('img', alt=lambda x: x and ' - ' in str(x) and len(str(x).split(' - ')) >= 2)
+            print(f"🐛 DEBUG Page {page}: Found {len(player_imgs)} player images")
             
             cards = []
-            for container in price_containers:
+            for img in player_imgs:
                 try:
-                    # Check if this container has "EXTINCT" text
-                    container_text = container.get_text(strip=True).upper()
-                    is_extinct = "EXTINCT" in container_text
+                    alt_text = img.get('alt', '')
+                    parts = alt_text.split(' - ')
                     
-                    # Find the player card that this price container belongs to
-                    # Navigate up the DOM to find the parent card container
-                    card_parent = container
-                    player_img = None
-                    player_name = "Unknown"
-                    rating = 0
-                    
-                    # Look for player image in nearby elements (going up the DOM tree)
-                    for _ in range(5):  # Try going up 5 levels max
-                        if card_parent:
-                            # Look for player images in this container or siblings
-                            img_elements = card_parent.find_all('img', alt=True)
-                            for img in img_elements:
-                                alt_text = img.get('alt', '')
-                                # Check if this looks like player data: "Name - Rating - Type"
-                                if ' - ' in alt_text and len(alt_text.split(' - ')) >= 2:
-                                    parts = alt_text.split(' - ')
-                                    if len(parts) >= 2:
-                                        player_name = parts[0].strip()
-                                        try:
-                                            rating = int(parts[1].strip())
-                                            player_img = img
-                                            break
-                                        except ValueError:
-                                            continue
-                            
-                            if player_img:
-                                break
-                                
-                            # Move up one level in the DOM
-                            card_parent = card_parent.parent
-                        else:
-                            break
-                    
-                    # If we found player data, create a card entry
-                    if player_name != "Unknown" and rating > 0:
-                        # Try to find the player URL
-                        player_url = ""
-                        link_element = None
+                    if len(parts) >= 2:
+                        player_name = parts[0].strip()
+                        try:
+                            rating = int(parts[1].strip())
+                        except ValueError:
+                            continue
                         
-                        # Look for links in the card container
-                        if card_parent:
-                            link_element = card_parent.find('a', href=lambda x: x and '/players/' in str(x))
+                        # Look for price/extinct info near this player image
+                        is_extinct = False
                         
-                        if link_element:
-                            href = link_element.get('href', '')
-                            if href.startswith('/'):
-                                player_url = f"https://www.fut.gg{href}"
+                        # Check the parent containers for "EXTINCT" text
+                        parent = img.parent
+                        for _ in range(5):  # Check up to 5 parent levels
+                            if parent:
+                                parent_text = parent.get_text().upper()
+                                if 'EXTINCT' in parent_text:
+                                    is_extinct = True
+                                    break
+                                parent = parent.parent
                             else:
-                                player_url = href
+                                break
+                        
+                        # Also check siblings and nearby elements
+                        if not is_extinct:
+                            # Look for siblings or nearby elements that might contain price info
+                            if img.parent:
+                                siblings = img.parent.find_all(text=True)
+                                all_text = ' '.join(siblings).upper()
+                                if 'EXTINCT' in all_text:
+                                    is_extinct = True
+                        
+                        # Try to find player URL
+                        player_url = ""
+                        link_parent = img.parent
+                        for _ in range(5):
+                            if link_parent:
+                                link = link_parent.find('a', href=lambda x: x and '/players/' in str(x))
+                                if link:
+                                    href = link.get('href', '')
+                                    if href.startswith('/'):
+                                        player_url = f"https://www.fut.gg{href}"
+                                    else:
+                                        player_url = href
+                                    break
+                                link_parent = link_parent.parent
+                            else:
+                                break
                         
                         card_data = {
                             'name': player_name,
@@ -356,7 +352,6 @@ class FutGGExtinctMonitor:
                             print(f"🐛 DEBUG Page {page}: Found player: {player_name} ({rating}) - Extinct: {is_extinct}")
                     
                 except Exception as e:
-                    print(f"🐛 DEBUG Page {page}: Error processing container: {e}")
                     continue
             
             extinct_count = sum(1 for c in cards if c.get('appears_extinct', False))
