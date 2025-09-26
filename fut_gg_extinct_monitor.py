@@ -436,7 +436,7 @@ class FutGGExtinctMonitor:
                     print(f"Discord error for {card.get('name')}: {e}")
             
             # Small delay between individual notifications to avoid spam
-            time.sleep(0.5)
+            time.sleep(2)
         
         # Send a clean summary if multiple players went extinct
         if len(newly_extinct_cards) > 1:
@@ -521,7 +521,7 @@ class FutGGExtinctMonitor:
                     print(f"Discord error for {card.get('name')}: {e}")
             
             # Small delay between notifications
-            time.sleep(0.5)
+            time.sleep(2)
         
         # Send summary if multiple players became available
         if len(no_longer_extinct_cards) > 1:
