@@ -189,72 +189,69 @@ class FutGGExtinctMonitor:
 
     def find_extinct_boundary(self):
         """
-        Dynamically find where extinct players end in the price-sorted list
-        Returns: (last_extinct_page, estimated_total_extinct_players)
+        Find extinct zone boundary by stopping as soon as we find players with prices
+        Uses both currentDbPrice and data-price attributes for accuracy
         """
         print("🔍 Finding current extinct zone boundary...")
         
-        # Start checking from a reasonable page (around where extinctions usually end)
-        test_pages = [35, 40, 45, 50, 30, 25, 20]  # Start middle, then expand search
-        last_extinct_page = 0
-        
-        for page in test_pages:
+        # Start from page 1 and work forward until we find players with prices
+        for page in range(1, 61):  # Check up to page 60
             try:
-                print(f"🧪 Testing page {page} for extinct players...")
-                cards = self.scrape_fut_gg_players_sorted(page)
+                print(f"🧪 Testing page {page} for extinct/available players...")
                 
-                if not cards:
-                    continue
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                }
                 
-                extinct_count = sum(1 for card in cards if card.get('appears_extinct', False))
-                print(f"📊 Page {page}: {extinct_count}/{len(cards)} players extinct")
+                response = requests.get(f"https://www.fut.gg/players/?page={page}&sorts=current_price", 
+                                      headers=headers, timeout=30)
+                response.raise_for_status()
                 
-                if extinct_count > 0:
-                    # Found extinct players, this page is in the zone
-                    if page > last_extinct_page:
-                        last_extinct_page = page
+                # Method 1: Check currentDbPrice in JavaScript
+                js_content = response.text
+                import re
+                price_pattern = r'currentDbPrice:(null|\d+)'
+                price_matches = re.findall(price_pattern, js_content)
                 
-                time.sleep(random.uniform(1, 2))  # Be respectful
+                non_null_js_prices = sum(1 for price in price_matches if price != 'null')
+                
+                # Method 2: Check data-price attributes in HTML  
+                soup = BeautifulSoup(response.content, 'html.parser')
+                price_elements = soup.find_all(attrs={"data-has-price": True})
+                
+                players_with_data_prices = 0
+                for element in price_elements:
+                    if element.get('data-has-price') == 'true' and element.get('data-price'):
+                        players_with_data_prices += 1
+                
+                print(f"📊 Page {page}: JS non-null prices: {non_null_js_prices}, Data-price elements: {players_with_data_prices}")
+                
+                # If EITHER method shows players with prices, we've hit the boundary
+                if non_null_js_prices > 0 or players_with_data_prices > 0:
+                    extinct_boundary = max(1, page - 1)  # Last page was fully extinct
+                    print(f"🎯 Extinct zone ends at page {extinct_boundary}")
+                    print(f"📍 Page {page} has available players - stopping boundary search")
+                    
+                    estimated_total = extinct_boundary * 30
+                    return extinct_boundary, estimated_total
+                
+                # If this page appears fully extinct, continue to next page
+                print(f"📊 Page {page}: All players appear extinct, checking next page...")
+                time.sleep(random.uniform(1, 2))
                 
             except Exception as e:
                 print(f"⚠️ Error testing page {page}: {e}")
                 continue
         
-        # Now do a more precise search around the boundary we found
-        if last_extinct_page > 0:
-            # Check a few pages after our highest extinct page to find exact boundary
-            for page in range(last_extinct_page + 1, min(last_extinct_page + 10, 60)):
-                try:
-                    cards = self.scrape_fut_gg_players_sorted(page)
-                    if not cards:
-                        break
-                        
-                    extinct_count = sum(1 for card in cards if card.get('appears_extinct', False))
-                    
-                    if extinct_count > 0:
-                        last_extinct_page = page
-                    else:
-                        # No extinct players on this page, we've found the boundary
-                        break
-                    
-                    time.sleep(random.uniform(0.5, 1))
-                    
-                except Exception as e:
-                    print(f"⚠️ Error in boundary search page {page}: {e}")
-                    break
-        
-        # Estimate total extinct players (assuming ~20-40 per page)
-        estimated_total = last_extinct_page * 30  # Conservative estimate
-        
-        print(f"🎯 Extinct zone boundary found!")
-        print(f"📍 Last page with extinct players: {last_extinct_page}")
-        print(f"📊 Estimated total extinct players: ~{estimated_total}")
-        
-        return last_extinct_page, estimated_total
+        # If we checked all pages and found no prices, everything is extinct
+        print(f"🎯 All pages up to 60 appear to be extinct")
+        return 60, 1800
 
     def scrape_fut_gg_players_sorted(self, page=1):
         """
-        Extract extinct status from embedded JavaScript player data
+        Extract extinct status using both JavaScript and HTML data attributes
         """
         url = f"https://www.fut.gg/players/?page={page}&sorts=current_price"
         
@@ -273,30 +270,27 @@ class FutGGExtinctMonitor:
             
             print(f"🐛 DEBUG Page {page}: Response status {response.status_code}, content length {len(response.content)}")
             
-            # Extract player data from JavaScript objects
+            # Method 1: Extract currentDbPrice from JavaScript
             import re
             js_content = response.text
-            
-            # Look for patterns like currentDbPrice:null or currentDbPrice:1234
             price_pattern = r'currentDbPrice:(null|\d+)'
-            price_matches = re.findall(price_pattern, js_content)
+            js_price_matches = re.findall(price_pattern, js_content)
             
-            print(f"🐛 DEBUG Page {page}: Found {len(price_matches)} currentDbPrice entries")
+            print(f"🐛 DEBUG Page {page}: Found {len(js_price_matches)} currentDbPrice entries in JavaScript")
             
-            # Count null vs non-null prices
-            extinct_count = sum(1 for price in price_matches if price == 'null')
-            available_count = len(price_matches) - extinct_count
-            
-            print(f"🐛 DEBUG Page {page}: {extinct_count} null prices (extinct), {available_count} with prices (available)")
-            
-            # Parse HTML to get player names for matching
+            # Method 2: Extract data-price attributes from HTML
             soup = BeautifulSoup(response.content, 'html.parser')
+            price_elements = soup.find_all(attrs={"data-has-price": True})
+            
+            print(f"🐛 DEBUG Page {page}: Found {len(price_elements)} data-price elements in HTML")
+            
+            # Get player images
             player_imgs = soup.find_all('img', alt=lambda x: x and ' - ' in str(x) and len(str(x).split(' - ')) >= 2)
             print(f"🐛 DEBUG Page {page}: Found {len(player_imgs)} player images")
             
             cards = []
             
-            # Process each player and match with price data
+            # Process each player
             for i, img in enumerate(player_imgs):
                 try:
                     alt_text = img.get('alt', '')
@@ -309,38 +303,46 @@ class FutGGExtinctMonitor:
                         except ValueError:
                             continue
                         
-                        # Determine extinct status based on corresponding price entry
+                        # Determine extinct status using both methods
                         is_extinct = False
-                        if i < len(price_matches):
-                            price_value = price_matches[i]
-                            is_extinct = (price_value == 'null')
                         
-                        # FIXED: Find the specific player URL for THIS player
+                        # Method 1: Check JavaScript currentDbPrice
+                        js_extinct = False
+                        if i < len(js_price_matches):
+                            js_price = js_price_matches[i]
+                            js_extinct = (js_price == 'null')
+                        
+                        # Method 2: Check HTML data-price attributes
+                        html_extinct = True  # Default to extinct if no data found
+                        if i < len(price_elements):
+                            element = price_elements[i]
+                            has_price = element.get('data-has-price') == 'true'
+                            price_value = element.get('data-price')
+                            html_extinct = not (has_price and price_value)
+                        
+                        # Combine both methods - extinct if EITHER method indicates extinct
+                        is_extinct = js_extinct or html_extinct
+                        
+                        print(f"🐛 DEBUG Page {page}: {player_name} - JS extinct: {js_extinct}, HTML extinct: {html_extinct}, Final: {is_extinct}")
+                        
+                        # Try to find matching player URL (existing logic)
                         player_url = ""
-                        
-                        # Look for the closest parent container that contains both the image and the correct link
                         current_element = img
-                        for level in range(8):  # Search up the DOM tree
+                        for level in range(8):
                             if current_element and current_element.parent:
                                 parent = current_element.parent
-                                
-                                # Look for ALL player links in this container
                                 player_links = parent.find_all('a', href=lambda x: x and '/players/' in str(x))
                                 
                                 for link in player_links:
                                     href = link.get('href', '')
-                                    
-                                    # Extract player name from URL to match with our player
                                     if '/players/' in href:
                                         url_parts = href.split('/')
                                         for part in url_parts:
                                             if '-' in part and any(char.isalpha() for char in part):
-                                                # URL format is usually like "123456-player-name-here"
                                                 url_name_part = part.split('-', 1)
                                                 if len(url_name_part) > 1:
                                                     url_name = url_name_part[1].replace('-', ' ').strip()
                                                     
-                                                    # Check if this URL name matches our player name
                                                     if (player_name.lower().replace(' ', '') in url_name.lower().replace(' ', '') or
                                                         url_name.lower().replace(' ', '') in player_name.lower().replace(' ', '')):
                                                         
@@ -354,18 +356,11 @@ class FutGGExtinctMonitor:
                                         break
                                 
                                 if player_url:
-                                    print(f"🐛 DEBUG Page {page}: Found matching URL for {player_name}: {player_url}")
                                     break
                                 
                                 current_element = parent
                             else:
                                 break
-                        
-                        # If we couldn't find a matching URL, don't include any URL to avoid mismatches
-                        if not player_url:
-                            print(f"🐛 DEBUG Page {page}: Could not find matching URL for {player_name}")
-                        
-                        print(f"🐛 DEBUG Page {page}: {player_name} (Position: {i+1}) - Price: {price_matches[i] if i < len(price_matches) else 'unknown'} - Extinct: {is_extinct}")
                         
                         card_data = {
                             'name': player_name,
@@ -375,7 +370,7 @@ class FutGGExtinctMonitor:
                             'nation': 'Unknown',
                             'league': 'Unknown',
                             'card_type': 'Gold' if rating >= 75 else 'Silver' if rating >= 65 else 'Bronze',
-                            'fut_gg_url': player_url if player_url else None,  # Only include if we found a match
+                            'fut_gg_url': player_url if player_url else None,
                             'appears_extinct': is_extinct,
                             'fut_gg_id': None
                         }
