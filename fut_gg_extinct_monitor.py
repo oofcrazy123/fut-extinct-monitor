@@ -679,14 +679,16 @@ class FutGGExtinctMonitor:
 
     def monitor_extinct_zone(self):
         """
-        Monitor the extinct zone dynamically - refresh boundary periodically
-        and focus monitoring on those pages
+        Monitor the extinct zone dynamically - only alert on status changes
         """
-        print("🎯 Starting extinct zone monitoring...")
+        print("🎯 Starting extinct zone monitoring with change detection...")
         
         # Every 10 cycles, refresh the extinct boundary
         boundary_refresh_counter = 0
         last_extinct_page = 0
+        
+        # Track player statuses to detect changes
+        player_status_tracker = {}  # {player_name: 'extinct' or 'available'}
         
         while True:
             try:
@@ -717,18 +719,29 @@ class FutGGExtinctMonitor:
                         for card in cards:
                             if not card.get('name') or card.get('name') == 'Unknown':
                                 continue
+                            
+                            player_name = card.get('name')
+                            current_status = 'extinct' if card.get('appears_extinct', False) else 'available'
+                            previous_status = player_status_tracker.get(player_name)
+                            
+                            # Detect status changes
+                            if previous_status is None:
+                                # First time seeing this player - just record status, no alert
+                                player_status_tracker[player_name] = current_status
+                                print(f"🔍 First detection: {player_name} is {current_status}")
+                            
+                            elif previous_status != current_status:
+                                # Status changed - this is what we want to alert about
+                                player_status_tracker[player_name] = current_status
                                 
-                            is_extinct = card.get('appears_extinct', False)
+                                if current_status == 'extinct':
+                                    newly_extinct.append(card)
+                                    print(f"🚨 NEW EXTINCTION: {player_name} went extinct")
+                                else:
+                                    no_longer_extinct.append(card)
+                                    print(f"✅ BACK TO MARKET: {player_name} is available again")
                             
-                            # Check if this card's status changed
-                            previous_status = self.get_card_extinction_status(card['name'])
-                            
-                            if is_extinct and previous_status != 'extinct':
-                                newly_extinct.append(card)
-                                self.update_card_extinction_status(card['name'], 'extinct')
-                            elif not is_extinct and previous_status == 'extinct':
-                                no_longer_extinct.append(card)
-                                self.update_card_extinction_status(card['name'], 'available')
+                            # If status unchanged, do nothing (no spam)
                     
                     except Exception as e:
                         print(f"⚠️ Error monitoring page {page}: {e}")
@@ -737,7 +750,7 @@ class FutGGExtinctMonitor:
                     # Short delay between pages
                     time.sleep(random.uniform(1, 2))
                 
-                # Send notifications for status changes
+                # Send alerts only for status changes
                 if newly_extinct:
                     self.send_extinction_alerts(newly_extinct)
                 
