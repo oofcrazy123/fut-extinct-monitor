@@ -165,9 +165,9 @@ class FutGGExtinctMonitor:
             
             self.send_notification_to_all(
                 f"🤖 FUT.GG Extinct Monitor Started!\n"
-                f"🎯 Using dynamic extinct zone detection\n"
+                f"🎯 Using filtered URL for direct extinct detection\n"
                 f"⚡ Running on cloud infrastructure\n"
-                f"⏰ Check interval: 5-10 minutes\n"
+                f"⏰ Check interval: 5 minutes\n"
                 f"🔒 Instance: {instance_id[:12]}",
                 "🚀 Extinct Monitor Started"
             )
@@ -187,400 +187,181 @@ class FutGGExtinctMonitor:
             except:
                 pass
 
-    def find_extinct_boundary(self):
+    def scrape_extinct_players_filtered(self, max_pages=50):
         """
-        Find extinct zone boundary by stopping as soon as we find players with prices
-        Uses both currentDbPrice and data-price attributes for accuracy
+        Scrape extinct players using the filtered URL that only shows extinct players
         """
-        print("🔍 Finding current extinct zone boundary...")
+        extinct_players = []
         
-        # Start from page 1 and work forward until we find players with prices
-        for page in range(1, 61):  # Check up to page 60
+        for page in range(1, max_pages + 1):
+            url = f"https://www.fut.gg/players/?page={page}&price__lte=0"
+            
             try:
-                print(f"🧪 Testing page {page} for extinct/available players...")
-                
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.5',
                 }
                 
-                response = requests.get(f"https://www.fut.gg/players/?page={page}&sorts=current_price", 
-                                      headers=headers, timeout=30)
+                response = requests.get(url, headers=headers, timeout=30)
                 response.raise_for_status()
                 
-                # Method 1: Check currentDbPrice in JavaScript
-                js_content = response.text
-                import re
-                price_pattern = r'currentDbPrice:(null|\d+)'
-                price_matches = re.findall(price_pattern, js_content)
-                
-                non_null_js_prices = sum(1 for price in price_matches if price != 'null')
-                
-                # Method 2: Check data-price attributes in HTML  
                 soup = BeautifulSoup(response.content, 'html.parser')
-                price_elements = soup.find_all(attrs={"data-has-price": True})
+                player_imgs = soup.find_all('img', alt=lambda x: x and ' - ' in str(x) and len(str(x).split(' - ')) >= 2)
                 
-                players_with_data_prices = 0
-                for element in price_elements:
-                    if element.get('data-has-price') == 'true' and element.get('data-price'):
-                        players_with_data_prices += 1
+                if not player_imgs:
+                    print(f"No more extinct players found at page {page}, stopping")
+                    break
                 
-                print(f"📊 Page {page}: JS non-null prices: {non_null_js_prices}, Data-price elements: {players_with_data_prices}")
+                print(f"Page {page}: Found {len(player_imgs)} extinct players")
                 
-                # If EITHER method shows players with prices, we've hit the boundary
-                if non_null_js_prices > 0 or players_with_data_prices > 0:
-                    extinct_boundary = max(1, page - 1)  # Last page was fully extinct
-                    print(f"🎯 Extinct zone ends at page {extinct_boundary}")
-                    print(f"📍 Page {page} has available players - stopping boundary search")
+                for img in player_imgs:
+                    try:
+                        alt_text = img.get('alt', '')
+                        parts = alt_text.split(' - ')
+                        
+                        if len(parts) >= 2:
+                            player_name = parts[0].strip()
+                            rating = int(parts[1].strip())
+                            
+                            card_data = {
+                                'name': player_name,
+                                'rating': rating,
+                                'appears_extinct': True,  # All players on this URL are extinct
+                                'fut_gg_url': None
+                            }
+                            
+                            extinct_players.append(card_data)
                     
-                    estimated_total = extinct_boundary * 30
-                    return extinct_boundary, estimated_total
+                    except ValueError:
+                        continue
                 
-                # If this page appears fully extinct, continue to next page
-                print(f"📊 Page {page}: All players appear extinct, checking next page...")
                 time.sleep(random.uniform(1, 2))
                 
             except Exception as e:
-                print(f"⚠️ Error testing page {page}: {e}")
-                continue
+                print(f"Error scraping extinct page {page}: {e}")
+                break
         
-        # If we checked all pages and found no prices, everything is extinct
-        print(f"🎯 All pages up to 60 appear to be extinct")
-        return 60, 1800
+        print(f"Found {len(extinct_players)} total extinct players")
+        return extinct_players
 
-    def scrape_fut_gg_players_sorted(self, page=1):
-        """
-        Extract extinct status using both JavaScript and HTML data attributes
-        """
-        url = f"https://www.fut.gg/players/?page={page}&sorts=current_price"
-        
+    def check_individual_player_extinct(self, player_name):
+        """Check if a specific player is still extinct by searching fut.gg"""
         try:
+            # Search for the player on fut.gg
+            search_url = f"https://www.fut.gg/players/?search={player_name.replace(' ', '+')}"
+            
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'User-Agent': random.choice(self.user_agents),
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
             }
             
-            response = requests.get(url, headers=headers, timeout=30)
+            response = requests.get(search_url, headers=headers, timeout=30)
             response.raise_for_status()
             
-            print(f"🐛 DEBUG Page {page}: Response status {response.status_code}, content length {len(response.content)}")
-            
-            # Method 1: Extract currentDbPrice from JavaScript
-            import re
-            js_content = response.text
-            price_pattern = r'currentDbPrice:(null|\d+)'
-            js_price_matches = re.findall(price_pattern, js_content)
-            
-            print(f"🐛 DEBUG Page {page}: Found {len(js_price_matches)} currentDbPrice entries in JavaScript")
-            
-            # Method 2: Extract data-price attributes from HTML
             soup = BeautifulSoup(response.content, 'html.parser')
-            price_elements = soup.find_all(attrs={"data-has-price": True})
             
-            print(f"🐛 DEBUG Page {page}: Found {len(price_elements)} data-price elements in HTML")
+            # Look for the player in search results
+            player_found = False
+            player_imgs = soup.find_all('img', alt=lambda x: x and player_name.lower() in str(x).lower())
             
-            # Get player images
-            player_imgs = soup.find_all('img', alt=lambda x: x and ' - ' in str(x) and len(str(x).split(' - ')) >= 2)
-            print(f"🐛 DEBUG Page {page}: Found {len(player_imgs)} player images")
+            if player_imgs:
+                # Found the player, now check if they have "EXTINCT" in their price area
+                for img in player_imgs:
+                    # Find the price container for this player
+                    card_container = img.find_parent(['div', 'article', 'section'])
+                    if card_container:
+                        container_text = card_container.get_text().upper()
+                        if "EXTINCT" in container_text:
+                            return True  # Still extinct
+                        else:
+                            return False  # Has price, not extinct
+                
+                # If we found the player but no explicit extinct text, assume not extinct
+                return False
             
-            cards = []
+            # Player not found in search - might be extinct or search failed
+            return None  # Uncertain
             
-            # Process each player
-            for i, img in enumerate(player_imgs):
-                try:
-                    alt_text = img.get('alt', '')
-                    parts = alt_text.split(' - ')
-                    
-                    if len(parts) >= 2:
-                        player_name = parts[0].strip()
-                        try:
-                            rating = int(parts[1].strip())
-                        except ValueError:
-                            continue
-                        
-                        # Determine extinct status using both methods
-                        is_extinct = False
-                        
-                        # Method 1: Check JavaScript currentDbPrice
-                        js_extinct = False
-                        if i < len(js_price_matches):
-                            js_price = js_price_matches[i]
-                            js_extinct = (js_price == 'null')
-                        
-                        # Method 2: Check HTML data-price attributes
-                        html_extinct = True  # Default to extinct if no data found
-                        if i < len(price_elements):
-                            element = price_elements[i]
-                            has_price = element.get('data-has-price') == 'true'
-                            price_value = element.get('data-price')
-                            html_extinct = not (has_price and price_value)
-                        
-                        # Combine both methods - extinct if EITHER method indicates extinct
-                        is_extinct = js_extinct or html_extinct
-                        
-                        print(f"🐛 DEBUG Page {page}: {player_name} - JS extinct: {js_extinct}, HTML extinct: {html_extinct}, Final: {is_extinct}")
-                        
-                        # Try to find matching player URL (existing logic)
-                        player_url = ""
-                        current_element = img
-                        for level in range(8):
-                            if current_element and current_element.parent:
-                                parent = current_element.parent
-                                player_links = parent.find_all('a', href=lambda x: x and '/players/' in str(x))
-                                
-                                for link in player_links:
-                                    href = link.get('href', '')
-                                    if '/players/' in href:
-                                        url_parts = href.split('/')
-                                        for part in url_parts:
-                                            if '-' in part and any(char.isalpha() for char in part):
-                                                url_name_part = part.split('-', 1)
-                                                if len(url_name_part) > 1:
-                                                    url_name = url_name_part[1].replace('-', ' ').strip()
-                                                    
-                                                    if (player_name.lower().replace(' ', '') in url_name.lower().replace(' ', '') or
-                                                        url_name.lower().replace(' ', '') in player_name.lower().replace(' ', '')):
-                                                        
-                                                        if href.startswith('/'):
-                                                            player_url = f"https://www.fut.gg{href}"
-                                                        else:
-                                                            player_url = href
-                                                        break
-                                    
-                                    if player_url:
-                                        break
-                                
-                                if player_url:
-                                    break
-                                
-                                current_element = parent
-                            else:
-                                break
-                        
-                        card_data = {
-                            'name': player_name,
-                            'rating': rating,
-                            'position': 'Unknown',
-                            'club': 'Unknown', 
-                            'nation': 'Unknown',
-                            'league': 'Unknown',
-                            'card_type': 'Gold' if rating >= 75 else 'Silver' if rating >= 65 else 'Bronze',
-                            'fut_gg_url': player_url if player_url else None,
-                            'appears_extinct': is_extinct,
-                            'fut_gg_id': None
-                        }
-                        
-                        cards.append(card_data)
-                    
-                except Exception as e:
-                    print(f"🐛 DEBUG Page {page}: Error processing player {i}: {e}")
-                    continue
-            
-            total_extinct = sum(1 for c in cards if c.get('appears_extinct', False))
-            print(f"📄 Page {page}: Found {len(cards)} cards, {total_extinct} appear extinct")
-            
-            return cards
-            
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Network error scraping page {page}: {e}")
-            return []
         except Exception as e:
-            print(f"❌ Error scraping page {page}: {e}")
-            return []
-        
-    def extract_rating_flexible(self, container):
-        """Extract player rating with flexible selectors"""
-        try:
-            # Look for common rating patterns
-            rating_selectors = [
-                lambda c: c.find(text=lambda x: x and x.strip().isdigit() and 50 <= int(x.strip()) <= 99),
-                lambda c: c.find('span', class_=lambda x: x and 'rating' in x.lower()),
-                lambda c: c.find('div', class_=lambda x: x and 'rating' in x.lower()),
-                lambda c: c.find(attrs={'data-rating': True}),
-            ]
-            
-            for selector in rating_selectors:
-                element = selector(container)
-                if element:
-                    rating_text = element.get('data-rating') if hasattr(element, 'get') else str(element).strip()
-                    if rating_text.isdigit() and 50 <= int(rating_text) <= 99:
-                        return int(rating_text)
-            
-            return 0
-        except:
-            return 0
-    
-    def extract_position_flexible(self, container):
-        """Extract player position with flexible selectors"""
-        try:
-            # Common FIFA positions
-            positions = ['ST', 'CF', 'RF', 'LF', 'RW', 'LW', 'CAM', 'CM', 'CDM', 'RM', 'LM', 
-                        'RB', 'LB', 'RWB', 'LWB', 'CB', 'GK']
-            
-            container_text = container.get_text().upper() if hasattr(container, 'get_text') else str(container).upper()
-            
-            for pos in positions:
-                if pos in container_text:
-                    return pos
-            
-            return 'Unknown'
-        except:
-            return 'Unknown'
-    
-    def extract_club_flexible(self, container):
-        """Extract player club with flexible selectors"""
-        try:
-            # Look for club information
-            club_element = (
-                container.find(class_=lambda x: x and 'club' in x.lower()) or
-                container.find('img', alt=lambda x: x and len(x) > 2 and not any(term in x.lower() for term in ['player', 'rating', 'position']))
-            )
-            
-            if club_element:
-                return club_element.get('alt', '') or club_element.get_text('').strip()
-            
-            return 'Unknown'
-        except:
-            return 'Unknown'
-    
-    def extract_nation_flexible(self, container):
-        """Extract player nation with flexible selectors"""
-        try:
-            # Look for nation/flag information
-            nation_element = (
-                container.find(class_=lambda x: x and any(term in x.lower() for term in ['nation', 'country', 'flag'])) or
-                container.find('img', alt=lambda x: x and x and len(x) < 20 and len(x) > 2)
-            )
-            
-            if nation_element:
-                return nation_element.get('alt', '') or nation_element.get_text('').strip()
-            
-            return 'Unknown'
-        except:
-            return 'Unknown'
-    
-    def extract_league_flexible(self, container):
-        """Extract player league with flexible selectors"""
-        try:
-            # Look for league information
-            league_element = container.find(class_=lambda x: x and 'league' in x.lower())
-            
-            if league_element:
-                return league_element.get_text('').strip()
-            
-            return 'Unknown'
-        except:
-            return 'Unknown'
+            print(f"Error checking individual player {player_name}: {e}")
+            return None  # Uncertain due to error
 
-    def extract_fut_gg_id(self, url):
-        """Extract FUT.GG ID from URL"""
-        try:
-            if '/players/' in url:
-                parts = url.split('/players/')
-                if len(parts) > 1:
-                    return parts[1].split('/')[0].split('?')[0]
-            return None
-        except:
-            return None
-
-    def scrape_extinct_zone_players(self):
-        """
-        Scrape players from the extinct zone (dynamically determined pages)
-        """
-        print("🚀 Starting extinct zone scraping...")
+    def monitor_extinct_players(self):
+        """Hybrid monitoring: filtered URL for new extinctions + individual checks for availability"""
+        player_status_tracker = {}
+        cycle_count = 0
         
-        # Find the current extinct boundary
-        last_extinct_page, total_extinct_estimated = self.find_extinct_boundary()
-        
-        if last_extinct_page == 0:
-            print("⚠️ No extinct players found in current market")
-            return 0
-        
-        # Now scrape all pages in the extinct zone
-        total_saved = 0
-        extinct_zone_cards = []
-        
-        for page in range(1, last_extinct_page + 1):
+        while True:
             try:
-                print(f"📄 Scraping extinct zone page {page}/{last_extinct_page}...")
+                cycle_count += 1
+                print(f"Starting monitoring cycle #{cycle_count}...")
                 
-                cards = self.scrape_fut_gg_players_sorted(page)
-                if cards:
-                    # Only save cards that appear extinct
-                    extinct_cards = [card for card in cards if card.get('appears_extinct', False)]
-                    saved = self.save_cards_to_db(extinct_cards)
-                    total_saved += saved
-                    extinct_zone_cards.extend(extinct_cards)
+                # Step 1: Get currently extinct players from filtered URL
+                print("📡 Checking filtered URL for newly extinct players...")
+                current_extinct = self.scrape_extinct_players_filtered(max_pages=10)
+                current_extinct_names = {player['name'] for player in current_extinct}
+                
+                # Step 2: Detect new extinctions
+                newly_extinct = []
+                for player in current_extinct:
+                    if player['name'] not in player_status_tracker:
+                        newly_extinct.append(player)
+                        player_status_tracker[player['name']] = 'extinct'
+                        print(f"🔥 NEW EXTINCTION: {player['name']}")
+                
+                # Step 3: Check sample of previously extinct players individually
+                previously_extinct = [name for name, status in player_status_tracker.items() 
+                                    if status == 'extinct']
+                
+                no_longer_extinct = []
+                
+                if previously_extinct:
+                    # Sample up to 15 previously extinct players to check individually
+                    sample_size = min(15, len(previously_extinct))
+                    sample_to_check = random.sample(previously_extinct, sample_size)
                     
-                    print(f"✅ Page {page}: Found {len(cards)} cards, {len(extinct_cards)} extinct, saved {saved} new")
-                else:
-                    print(f"⚠️ Page {page}: No cards found")
+                    print(f"🔍 Checking {len(sample_to_check)} previously extinct players individually...")
+                    
+                    for player_name in sample_to_check:
+                        print(f"Checking {player_name}...")
+                        still_extinct = self.check_individual_player_extinct(player_name)
+                        
+                        if still_extinct is False:  # Explicitly not extinct
+                            no_longer_extinct.append({'name': player_name, 'rating': '?'})
+                            player_status_tracker[player_name] = 'available'
+                            print(f"✅ BACK TO MARKET: {player_name}")
+                        elif still_extinct is True:
+                            print(f"🔥 Still extinct: {player_name}")
+                        else:
+                            print(f"❓ Uncertain status: {player_name}")
+                        
+                        # Small delay between individual checks
+                        time.sleep(random.uniform(2, 4))
                 
-                # Short delay between pages
-                time.sleep(random.uniform(1, 2))
+                # Step 4: Send alerts for changes only
+                if newly_extinct:
+                    self.send_extinction_alerts(newly_extinct)
+                
+                if no_longer_extinct:
+                    self.send_availability_alerts(no_longer_extinct)
+                
+                # Cycle summary
+                total_tracked = len(player_status_tracker)
+                extinct_count = sum(1 for status in player_status_tracker.values() if status == 'extinct')
+                available_count = total_tracked - extinct_count
+                
+                print(f"✅ Cycle #{cycle_count} complete:")
+                print(f"   🔥 New extinctions: {len(newly_extinct)}")
+                print(f"   ✅ Back to market: {len(no_longer_extinct)}")
+                print(f"   📊 Total tracked: {total_tracked} ({extinct_count} extinct, {available_count} available)")
+                
+                time.sleep(300)  # 5 minute intervals
                 
             except Exception as e:
-                print(f"❌ Error on extinct zone page {page}: {e}")
-                continue
-        
-        print(f"🎉 Extinct zone scraping complete!")
-        print(f"📊 Total extinct zone cards in database: {total_saved}")
-        
-        # Send notification about extinct zone discovery
-        self.send_notification_to_all(
-            f"🔍 Extinct Zone Analysis Complete!\n"
-            f"📊 Found {total_extinct_estimated} extinct players across {last_extinct_page} pages\n"
-            f"💾 Saved {total_saved} new cards to monitor\n"
-            f"🎯 Now focusing monitoring on extinct zone players",
-            "🔍 Extinct Zone Mapped"
-        )
-        
-        return total_saved
-
-    def get_card_extinction_status(self, player_name):
-        """Get the last known extinction status of a player"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT extinction_status FROM cards 
-                WHERE name = ? 
-                ORDER BY created_at DESC 
-                LIMIT 1
-            ''', (player_name,))
-            
-            result = cursor.fetchone()
-            conn.close()
-            
-            return result[0] if result else None
-            
-        except Exception as e:
-            print(f"⚠️ Error getting extinction status for {player_name}: {e}")
-            return None
-    
-    def update_card_extinction_status(self, player_name, status):
-        """Update the extinction status of a player"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                UPDATE cards 
-                SET extinction_status = ?, last_checked = CURRENT_TIMESTAMP 
-                WHERE name = ?
-            ''', (status, player_name))
-            
-            conn.commit()
-            conn.close()
-            
-        except Exception as e:
-            print(f"⚠️ Error updating extinction status for {player_name}: {e}")
+                print(f"Monitoring error: {e}")
+                time.sleep(60)
 
     def send_extinction_alerts(self, newly_extinct_cards):
         """Send individual clean alerts for each newly extinct player"""
@@ -677,363 +458,6 @@ class FutGGExtinctMonitor:
         
         self.send_notification_to_all(full_message, "✅ BACK IN MARKET")
 
-    def monitor_extinct_zone(self):
-        """
-        Monitor the extinct zone dynamically - only alert on status changes
-        """
-        print("🎯 Starting extinct zone monitoring with change detection...")
-        
-        # Every 10 cycles, refresh the extinct boundary
-        boundary_refresh_counter = 0
-        last_extinct_page = 0
-        
-        # Track player statuses to detect changes
-        player_status_tracker = {}  # {player_name: 'extinct' or 'available'}
-        
-        while True:
-            try:
-                # Refresh extinct boundary every 10 cycles (or first time)
-                if boundary_refresh_counter % 10 == 0:
-                    last_extinct_page, total_extinct = self.find_extinct_boundary()
-                    
-                    if last_extinct_page == 0:
-                        print("⚠️ No extinct zone found, checking again in 10 minutes...")
-                        time.sleep(600)  # Wait 10 minutes before checking again
-                        continue
-                
-                boundary_refresh_counter += 1
-                
-                # Monitor a sample of extinct zone pages each cycle
-                pages_to_check = min(5, last_extinct_page)  # Check up to 5 pages per cycle
-                sample_pages = random.sample(range(1, last_extinct_page + 1), pages_to_check)
-                
-                print(f"🔍 Cycle {boundary_refresh_counter}: Monitoring pages {sample_pages} (extinct zone: 1-{last_extinct_page})")
-                
-                newly_extinct = []
-                no_longer_extinct = []
-                
-                for page in sample_pages:
-                    try:
-                        cards = self.scrape_fut_gg_players_sorted(page)
-                        
-                        for card in cards:
-                            if not card.get('name') or card.get('name') == 'Unknown':
-                                continue
-                            
-                            player_name = card.get('name')
-                            current_status = 'extinct' if card.get('appears_extinct', False) else 'available'
-                            previous_status = player_status_tracker.get(player_name)
-                            
-                            # Detect status changes
-                            if previous_status is None:
-                                # First time seeing this player - just record status, no alert
-                                player_status_tracker[player_name] = current_status
-                                print(f"🔍 First detection: {player_name} is {current_status}")
-                            
-                            elif previous_status != current_status:
-                                # Status changed - this is what we want to alert about
-                                player_status_tracker[player_name] = current_status
-                                
-                                if current_status == 'extinct':
-                                    newly_extinct.append(card)
-                                    print(f"🚨 NEW EXTINCTION: {player_name} went extinct")
-                                else:
-                                    no_longer_extinct.append(card)
-                                    print(f"✅ BACK TO MARKET: {player_name} is available again")
-                            
-                            # If status unchanged, do nothing (no spam)
-                    
-                    except Exception as e:
-                        print(f"⚠️ Error monitoring page {page}: {e}")
-                        continue
-                    
-                    # Short delay between pages
-                    time.sleep(random.uniform(1, 2))
-                
-                # Send alerts only for status changes
-                if newly_extinct:
-                    self.send_extinction_alerts(newly_extinct)
-                
-                if no_longer_extinct:
-                    self.send_availability_alerts(no_longer_extinct)
-                
-                # Cycle summary
-                print(f"✅ Cycle complete: {len(newly_extinct)} new extinctions, {len(no_longer_extinct)} back in market")
-                
-                # Wait before next cycle
-                cycle_interval = int(os.getenv('MONITORING_CYCLE_INTERVAL', 5))
-                time.sleep(cycle_interval * 60)  # Convert to seconds
-                
-            except KeyboardInterrupt:
-                print("⏹️ Monitoring stopped by user")
-                break
-            except Exception as e:
-                print(f"❌ Error in monitoring cycle: {e}")
-                time.sleep(300)  # Wait 5 minutes before retrying
-    
-    def scrape_fut_gg_players(self, page_num=1):
-        """
-        Scrape players from fut.gg players page using HTML parsing
-        """
-        try:
-            self.rotate_user_agent()
-            
-            url = f'https://www.fut.gg/players/?page={page_num}'
-            print(f"🌐 Scraping HTML page: {url}")
-            response = self.session.get(url, timeout=30)
-            
-            if response.status_code != 200:
-                print(f"❌ Failed to get page {page_num}: {response.status_code}")
-                return []
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
-            cards = []
-            
-            # Look for player links
-            player_links = soup.find_all('a', href=lambda x: x and '/players/' in str(x))
-            
-            print(f"🔗 Found {len(player_links)} player links on page {page_num}")
-            
-            if len(player_links) == 0:
-                print("⚠️ WARNING: No player links found - website structure may have changed")
-                return []
-            
-            # Extract unique players
-            unique_players = {}
-            for link in player_links:
-                href = link.get('href', '')
-                if href not in unique_players:
-                    card_data = self.extract_player_data_from_link(link, soup)
-                    if card_data:
-                        unique_players[href] = card_data
-            
-            cards = list(unique_players.values())
-            
-            print(f"✅ HTML Scraping page {page_num}: Extracted {len(cards)} unique cards")
-            
-            return cards
-            
-        except Exception as e:
-            print(f"Error scraping page {page_num}: {e}")
-            return []
-        
-    def extract_player_data_from_link(self, link, soup):
-        """Extract player data from a link element using HTML parsing"""
-        try:
-            href = link.get('href', '')
-            
-            # Find the card container that holds this link
-            card_container = link.find_parent(['div', 'article', 'section'], class_=lambda x: x and any(
-                keyword in str(x).lower() for keyword in ['card', 'player', 'item']
-            ))
-            
-            if not card_container:
-                card_container = link.find_parent(['div', 'li'])
-            
-            # Extract name from link text or nearby elements
-            name = link.get_text(strip=True)
-            if not name or len(name) < 2:
-                # Try to find name in the container
-                name_elem = card_container.find(['h1', 'h2', 'h3', 'h4', 'span'], 
-                                               string=lambda x: x and len(str(x).strip()) > 2)
-                if name_elem:
-                    name = name_elem.get_text(strip=True)
-            
-            # Extract rating using regex
-            rating = 0
-            if card_container:
-                rating_text = card_container.get_text()
-                import re
-                rating_matches = re.findall(r'\b([4-9][0-9])\b', rating_text)
-                if rating_matches:
-                    rating = int(rating_matches[0])
-            
-            # Extract fut.gg ID from URL
-            fut_gg_id = None
-            if '/players/' in href:
-                url_parts = href.split('/')
-                for i, part in enumerate(url_parts):
-                    if part == 'players' and i + 1 < len(url_parts):
-                        fut_gg_id = url_parts[i + 1].split('?')[0]  # Remove query parameters
-                        break
-            
-            if name and rating > 0 and fut_gg_id:
-                fut_gg_url = 'https://www.fut.gg' + href if href.startswith('/') else href
-                
-                return {
-                    'name': name,
-                    'rating': rating,
-                    'position': '',
-                    'club': '',
-                    'nation': '',
-                    'league': '',
-                    'card_type': 'Gold' if rating >= 75 else 'Silver' if rating >= 65 else 'Bronze',
-                    'fut_gg_url': fut_gg_url,
-                    'fut_gg_id': fut_gg_id
-                }
-            
-            return None
-            
-        except Exception as e:
-            print(f"Error extracting player data: {e}")
-            return None
-    
-    def save_cards_to_db(self, cards):
-        """Save scraped cards to database"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        saved_count = 0
-        for card in cards:
-            try:
-                cursor.execute('''
-                    INSERT OR IGNORE INTO cards 
-                    (name, rating, position, club, nation, league, card_type, fut_gg_url, fut_gg_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    card['name'], card['rating'], card['position'], card['club'],
-                    card['nation'], card['league'], card['card_type'], 
-                    card['fut_gg_url'], card['fut_gg_id']
-                ))
-                if cursor.rowcount > 0:
-                    saved_count += 1
-            except Exception as e:
-                print(f"Error saving card {card['name']}: {e}")
-        
-        conn.commit()
-        conn.close()
-        return saved_count
-    
-    def scrape_all_players(self, max_pages=10):
-        """Scrape players from multiple pages using HTML parsing"""
-        print(f"🚀 Starting HTML scraping of {max_pages} pages...")
-        
-        total_saved = 0
-        
-        for page in range(1, max_pages + 1):
-            try:
-                print(f"📄 HTML scraping page {page}/{max_pages}...")
-                
-                cards = self.scrape_fut_gg_players(page)
-                if cards:
-                    saved = self.save_cards_to_db(cards)
-                    total_saved += saved
-                    print(f"✅ Page {page}: Found {len(cards)} cards, saved {saved} new cards")
-                else:
-                    print(f"⚠️ Page {page}: No cards found")
-                    if page > 1:
-                        break
-                
-                # Delay between pages to avoid detection
-                time.sleep(random.uniform(2, 4))
-                
-            except Exception as e:
-                print(f"❌ Error on page {page}: {e}")
-                continue
-        
-        print(f"🎉 HTML scraping complete! Total cards saved: {total_saved}")
-        self.send_notification_to_all(
-            f"🎉 HTML scraping complete!\n"
-            f"📊 Pages scraped: {max_pages}\n"
-            f"💾 Total cards in database: {total_saved}\n"
-            f"🤖 Starting extinct monitoring!",
-            "✅ Scraping Complete"
-        )
-        
-        return total_saved
-    
-    def check_extinction_on_listing_page(self, link, soup):
-        """
-        Check if a player appears extinct on the listing page itself
-        """
-        try:
-            # Find the parent container for this player link
-            card_container = link.find_parent(['div', 'article', 'section', 'li'])
-            if not card_container:
-                return False
-            
-            # Look for price information in the container
-            container_text = card_container.get_text().upper()
-            
-            # Check for explicit "EXTINCT" text
-            if "EXTINCT" in container_text:
-                return True
-            
-            # Look for price elements - if no price elements found, likely extinct
-            price_indicators = ['price', 'cost', 'coin', 'value', 'buy', 'sell']
-            price_elements = []
-            
-            for indicator in price_indicators:
-                elements = card_container.find_all(class_=lambda x: x and indicator in x.lower())
-                price_elements.extend(elements)
-            
-            # Also look for elements containing numbers that could be prices
-            number_elements = card_container.find_all(text=lambda x: x and any(char.isdigit() for char in x))
-            
-            # If we find "EXTINCT" in any price-related element, it's extinct
-            for element in price_elements:
-                if element and "EXTINCT" in element.get_text().upper():
-                    return True
-            
-            # Check if there are suspiciously few price indicators (could indicate extinction)
-            if len(price_elements) == 0 and len(number_elements) < 2:
-                # Very few price indicators, might be extinct
-                return True
-            
-            return False
-            
-        except Exception as e:
-            print(f"⚠️ Error checking extinction status: {e}")
-            return False
-    
-    def check_player_extinct_status(self, fut_gg_url):
-        """
-        Check if a specific player is extinct using HTML parsing
-        """
-        try:
-            self.rotate_user_agent()
-            response = self.session.get(fut_gg_url, timeout=30)
-            
-            if response.status_code != 200:
-                print(f"❌ Failed to check extinct status: {response.status_code}")
-                return None
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Look for extinct indicators in HTML
-            extinct_elements = soup.find_all(class_="flex items-center justify-center grow shrink-0 gap-[0.1em]")
-            
-            is_extinct = False
-            for element in extinct_elements:
-                text = element.get_text(strip=True).upper()
-                if "EXTINCT" in text:
-                    print(f"🔥 EXTINCT found: {text}")
-                    is_extinct = True
-                    break
-            
-            if not is_extinct:
-                # Also check for any element containing "EXTINCT" as backup
-                all_text = soup.get_text().upper()
-                if "EXTINCT" in all_text:
-                    print(f"🔥 EXTINCT detected in page content")
-                    is_extinct = True
-            
-            # Extract player image URL while we're here
-            player_image_url = None
-            img_elements = soup.find_all('img', alt=lambda x: x and any(word in str(x).lower() for word in ['team of the week', 'player', 'card']))
-            
-            for img in img_elements:
-                src = img.get('src', '')
-                if 'fut.gg' in src and ('cdn-cgi' in src or 'image' in src):
-                    player_image_url = src
-                    break
-            
-            return {"extinct": is_extinct, "image_url": player_image_url}
-            
-        except Exception as e:
-            print(f"Error checking extinct status for {fut_gg_url}: {e}")
-            return None
-    
     def send_telegram_notification(self, message):
         """Send notification to Telegram"""
         url = f"https://api.telegram.org/bot{Config.TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -1051,46 +475,6 @@ class FutGGExtinctMonitor:
                 print(f"❌ Telegram error: {response.status_code}")
         except Exception as e:
             print(f"❌ Telegram error: {e}")
-    
-    def send_discord_extinct_notification(self, card_info, image_url=None):
-        """Send simple Discord notification for extinct players"""
-        if not Config.DISCORD_WEBHOOK_URL:
-            return
-        
-        embed = {
-            "title": f"EXTINCT: {card_info['name']}",
-            "description": f"Rating {card_info['rating']} - No longer available on market",
-            "color": 0xff0000,
-            "url": card_info['fut_gg_url'],
-            "timestamp": datetime.now().isoformat(),
-            "fields": [
-                {
-                    "name": "Status",
-                    "value": "EXTINCT",
-                    "inline": True
-                },
-                {
-                    "name": "Rating", 
-                    "value": str(card_info['rating']),
-                    "inline": True
-                }
-            ]
-        }
-        
-        # Add player image if provided
-        if image_url:
-            embed["thumbnail"] = {"url": image_url}
-        
-        payload = {"embeds": [embed]}
-        
-        try:
-            response = requests.post(Config.DISCORD_WEBHOOK_URL, json=payload)
-            if response.status_code == 204:
-                print("✅ Discord extinct alert sent")
-            else:
-                print(f"❌ Discord error: {response.status_code}")
-        except Exception as e:
-            print(f"❌ Discord error: {e}")
     
     def send_discord_notification(self, message, title="FUT.GG Extinct Monitor"):
         """Send general Discord notification"""
@@ -1120,185 +504,19 @@ class FutGGExtinctMonitor:
         self.send_telegram_notification(message)
         self.send_discord_notification(message, title)
     
-    def send_extinct_alert(self, card_info, image_url=None):
-        """Send extinct player alert"""
-        # Check if we already sent an alert recently
-        alert_saved = self.save_extinct_alert(card_info['id'])
-        if not alert_saved:
-            return
-        
-        # Telegram message
-        telegram_message = f"""
-🔥 <b>EXTINCT PLAYER DETECTED!</b> 🔥
-
-🃏 <b>{card_info['name']}</b>
-⭐ Rating: {card_info['rating']}
-🏆 Position: {card_info['position'] or 'Unknown'}
-🏟️ Club: {card_info.get('club', 'Unknown')}
-🌍 Nation: {card_info.get('nation', 'Unknown')}
-
-💰 <b>Status: EXTINCT</b>
-📈 This player is not available on the market!
-⚡ Perfect time to list if you have this card!
-
-🔗 <a href="{card_info['fut_gg_url']}">View on FUT.GG</a>
-⏰ {datetime.now().strftime('%H:%M:%S')}
-
-💡 <b>Action:</b> If you own this card, list it now for maximum profit!
-        """
-        
-        self.send_telegram_notification(telegram_message.strip())
-        self.send_discord_extinct_notification(card_info, image_url)
-        
-        print(f"🔥 EXTINCT ALERT: {card_info['name']} ({card_info['rating']}) - Market extinct!")
-    
-    def save_extinct_alert(self, card_id):
-        """Save extinct alert and prevent duplicates"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Check if we already sent an alert recently
-        cooldown_time = datetime.now() - timedelta(hours=int(os.getenv('ALERT_COOLDOWN_HOURS', 6)))
-        cursor.execute('''
-            SELECT COUNT(*) FROM extinct_alerts 
-            WHERE card_id = ? AND alert_sent_at > ? AND resolved_at IS NULL
-        ''', (card_id, cooldown_time))
-        
-        recent_alerts = cursor.fetchone()[0]
-        
-        if recent_alerts > 0:
-            print(f"⚠️ Alert cooldown active for card {card_id}")
-            conn.close()
-            return False
-        
-        # Save new alert
-        cursor.execute('''
-            INSERT INTO extinct_alerts 
-            (card_id, platform, extinct_status)
-            VALUES (?, ?, ?)
-        ''', (card_id, 'fut_gg', True))
-        
-        conn.commit()
-        conn.close()
-        return True
-    
-    def get_cards_to_monitor(self, limit=50):
-        """Get cards from database to monitor"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT id, name, rating, position, club, nation, league, fut_gg_url, fut_gg_id
-            FROM cards 
-            ORDER BY RANDOM()
-            LIMIT ?
-        ''', (limit,))
-        
-        cards = []
-        for row in cursor.fetchall():
-            cards.append({
-                'id': row[0], 'name': row[1], 'rating': row[2], 'position': row[3],
-                'club': row[4], 'nation': row[5], 'league': row[6], 
-                'fut_gg_url': row[7], 'fut_gg_id': row[8]
-            })
-        
-        conn.close()
-        return cards
-    
-    def log_card_status(self, card_id, status_type, status_value):
-        """Log card status to database"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO card_status_history 
-                (card_id, status_type, status_value)
-                VALUES (?, ?, ?)
-            ''', (card_id, status_type, status_value))
-            
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            pass  # Don't let logging errors break monitoring
-    
-    def run_extinct_monitoring(self):
-        """Main monitoring loop using HTML scraping"""
-        print("🤖 Starting HTML scraping-based extinct monitoring...")
-        
-        cycle_count = 0
-        
-        while True:
-            try:
-                cards = self.get_cards_to_monitor(int(os.getenv('CARDS_TO_MONITOR_PER_CYCLE', 50)))
-                if not cards:
-                    print("❌ No cards in database! Running scraping...")
-                    self.scrape_all_players(5)
-                    continue
-                
-                print(f"🔍 HTML monitoring {len(cards)} cards for extinct status...")
-                
-                extinct_found = 0
-                for i, card in enumerate(cards):
-                    try:
-                        status_result = self.check_player_extinct_status(card['fut_gg_url'])
-                        
-                        if status_result and status_result.get('extinct'):
-                            self.send_extinct_alert(card, status_result.get('image_url'))
-                            extinct_found += 1
-                            self.log_card_status(card['id'], 'extinct', 'true')
-                        elif status_result and not status_result.get('extinct'):
-                            self.log_card_status(card['id'], 'available', 'true')
-                        
-                        # Progress update
-                        if (i + 1) % 10 == 0:
-                            print(f"✅ Checked {i + 1}/{len(cards)} cards... Extinct found: {extinct_found}")
-                        
-                        # Delay between checks
-                        time.sleep(random.uniform(3, 6))
-                        
-                    except Exception as e:
-                        print(f"Error monitoring {card['name']}: {e}")
-                        continue
-                
-                cycle_count += 1
-                
-                if extinct_found > 0:
-                    self.send_notification_to_all(
-                        f"🔍 HTML monitoring cycle #{cycle_count} complete!\n"
-                        f"📊 Checked {len(cards)} cards via HTML scraping\n"
-                        f"🔥 Found {extinct_found} extinct players\n"
-                        f"⏰ Next check in {int(os.getenv('MONITORING_CYCLE_INTERVAL', 5))} minutes",
-                        "🔍 Cycle Complete"
-                    )
-                else:
-                    print(f"🔍 Cycle #{cycle_count} complete - no extinct players found")
-                
-                # Wait based on config
-                wait_time = int(os.getenv('MONITORING_CYCLE_INTERVAL', 5)) * 60  # Convert minutes to seconds
-                print(f"💤 Cycle #{cycle_count} complete. Found {extinct_found} extinct players. Waiting {wait_time/60} minutes...")
-                time.sleep(wait_time)
-                
-            except KeyboardInterrupt:
-                print("🛑 Monitoring stopped!")
-                break
-            except Exception as e:
-                print(f"Monitoring error: {e}")
-                time.sleep(60)
-    
     def run_complete_system(self):
-        """Run the complete extinct monitoring system using dynamic extinct zone detection"""
-        print("🚀 Starting FUT.GG Extinct Player Monitor with Dynamic Zone Detection!")
+        """Run the complete extinct monitoring system using filtered URL approach"""
+        print("🚀 Starting FUT.GG Extinct Player Monitor with Filtered URL!")
         print("🐛 DEBUG: run_complete_system called")
         sys.stdout.flush()
         
         # Test mode - just try a simple request to fut.gg
         if os.getenv('TEST_MODE') == 'true':
-            print("🧪 TEST MODE: Testing basic fut.gg connectivity...")
+            print("🧪 TEST MODE: Testing filtered URL connectivity...")
             sys.stdout.flush()
             try:
                 import requests
-                print("🧪 TEST: Making request to fut.gg...")
+                print("🧪 TEST: Making request to filtered URL...")
                 sys.stdout.flush()
                 
                 headers = {
@@ -1310,48 +528,34 @@ class FutGGExtinctMonitor:
                     'Upgrade-Insecure-Requests': '1',
                 }
                 
-                response = requests.get('https://www.fut.gg/players/?page=1', headers=headers, timeout=15)
-                print(f"🧪 TEST: fut.gg responded with status {response.status_code}")
+                response = requests.get('https://www.fut.gg/players/?page=1&price__lte=0', headers=headers, timeout=15)
+                print(f"🧪 TEST: Filtered URL responded with status {response.status_code}")
                 print(f"🧪 TEST: Response length: {len(response.content)} bytes")
                 sys.stdout.flush()
                 
-                # Test if we can find any player links
+                # Test if we can find any extinct players
                 from bs4 import BeautifulSoup
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # Test the specific selectors we're using
-                price_containers = soup.find_all('div', class_="flex items-center justify-center grow shrink-0 gap-[0.1em]")
-                print(f"🧪 TEST: Found {len(price_containers)} price containers")
-                
                 player_imgs = soup.find_all('img', alt=lambda x: x and ' - ' in str(x))
-                print(f"🧪 TEST: Found {len(player_imgs)} player images with alt text")
+                print(f"🧪 TEST: Found {len(player_imgs)} extinct players on filtered page")
                 
-                # Show first few player images found
-                for i, img in enumerate(player_imgs[:5]):
+                # Show first few extinct players found
+                for i, img in enumerate(player_imgs[:3]):
                     alt_text = img.get('alt', '')
-                    print(f"🧪 TEST: Player {i+1}: {alt_text}")
+                    print(f"🧪 TEST: Extinct Player {i+1}: {alt_text}")
                 
                 sys.stdout.flush()
                 
-                # Test price-sorted page
-                print("🧪 TEST: Testing price-sorted page...")
-                sys.stdout.flush()
-                
-                sorted_response = requests.get('https://www.fut.gg/players/?page=1&sorts=current_price', headers=headers, timeout=15)
-                print(f"🧪 TEST: Price-sorted page status: {sorted_response.status_code}")
-                sys.stdout.flush()
-                
-                if len(price_containers) == 0:
-                    print("❌ TEST FAILED: No price containers found - HTML structure may have changed")
-                    print("🔄 FALLBACK: Will try alternative scraping method")
+                if len(player_imgs) == 0:
+                    print("❌ TEST FAILED: No extinct players found on filtered URL")
                     sys.stdout.flush()
                 else:
-                    print("✅ TEST PASSED: fut.gg structure detected successfully")
+                    print("✅ TEST PASSED: Filtered URL working successfully")
                     sys.stdout.flush()
                     
             except Exception as e:
-                print(f"❌ TEST FAILED: Cannot access fut.gg - {e}")
-                print("🔄 FALLBACK: Will try alternative scraping method")
+                print(f"❌ TEST FAILED: Cannot access filtered URL - {e}")
                 sys.stdout.flush()
                 import traceback
                 traceback.print_exc()
@@ -1364,109 +568,21 @@ class FutGGExtinctMonitor:
         print("🐛 DEBUG: Startup notification sent")
         sys.stdout.flush()
         
-        # Check current database state
-        print("🐛 DEBUG: Checking database state")
-        sys.stdout.flush()
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('SELECT COUNT(*) FROM cards')
-        card_count = cursor.fetchone()[0]
-        conn.close()
-        
-        print(f"📊 Current cards in database: {card_count}")
-        sys.stdout.flush()
-        
-        # Check if we should skip scraping
-        skip_scraping = os.getenv('SKIP_SCRAPING', 'false').lower() == 'true'
-        
-        if skip_scraping and card_count > 0:
-            print("⚠️ SKIP_SCRAPING enabled - using existing database")
-            sys.stdout.flush()
-            self.send_notification_to_all(
-                f"✅ Using existing database with {card_count:,} cards\n"
-                f"🎯 Starting dynamic extinct zone monitoring!",
-                "🎯 Zone Monitoring Started"
-            )
-        elif card_count < 100:
-            print("📄 Database needs players - starting extinct zone scraping...")
-            sys.stdout.flush()
-            
-            # Use try/except to handle missing methods gracefully
-            try:
-                print("🐛 DEBUG: Attempting extinct zone scraping...")
-                sys.stdout.flush()
-                scraped = self.scrape_extinct_zone_players()
-                # Ensure scraped is a number
-                scraped = scraped if scraped is not None else 0
-                print(f"🐛 DEBUG: Extinct zone scraping returned: {scraped}")
-                sys.stdout.flush()
-            except AttributeError:
-                print("⚠️ scrape_extinct_zone_players method not found, using fallback")
-                sys.stdout.flush()
-                scraped = self.scrape_all_players(int(os.getenv('MAX_PAGES_TO_SCRAPE', 10)))
-                scraped = scraped if scraped is not None else 0
-                print(f"🐛 DEBUG: Fallback scraping returned: {scraped}")
-                sys.stdout.flush()
-            except Exception as e:
-                print(f"⚠️ Error during scraping: {e}")
-                sys.stdout.flush()
-                import traceback
-                traceback.print_exc()
-                sys.stdout.flush()
-                print("🔄 Trying fallback HTML scraping...")
-                sys.stdout.flush()
-                try:
-                    scraped = self.scrape_all_players(5)  # Just scrape 5 pages as fallback
-                    scraped = scraped if scraped is not None else 0
-                    print(f"🐛 DEBUG: Emergency fallback returned: {scraped}")
-                    sys.stdout.flush()
-                except Exception as e2:
-                    print(f"❌ Emergency fallback also failed: {e2}")
-                    sys.stdout.flush()
-                    scraped = 0
-                
-            if scraped > 0:
-                print(f"✅ Scraped {scraped} players from extinct zone. Starting monitoring...")
-                sys.stdout.flush()
-            else:
-                print("⚠️ No players scraped - will try monitoring anyway")
-                sys.stdout.flush()
-        else:
-            print(f"✅ Found {card_count:,} cards in database")
-            sys.stdout.flush()
-            self.send_notification_to_all(
-                f"✅ Database ready with {card_count:,} cards\n"
-                f"🎯 Starting dynamic extinct zone monitoring!",
-                "🎯 Zone Monitoring Started"
-            )
-        
-        # Start the monitoring - use try/except for this too
-        print("🔥 Starting dynamic extinct zone monitoring...")
+        # Start the monitoring
+        print("🔥 Starting filtered URL extinct monitoring...")
         sys.stdout.flush()
         try:
-            print("🐛 DEBUG: About to call monitor_extinct_zone()")
+            print("🐛 DEBUG: About to call monitor_extinct_players()")
             sys.stdout.flush()
-            self.monitor_extinct_zone()
-            print("🐛 DEBUG: monitor_extinct_zone() returned")
+            self.monitor_extinct_players()
+            print("🐛 DEBUG: monitor_extinct_players() returned")
             sys.stdout.flush()
-        except AttributeError:
-            print("⚠️ monitor_extinct_zone method not found, using fallback monitoring")
-            sys.stdout.flush()
-            self.run_extinct_monitoring()  # Use existing method as fallback
         except Exception as e:
             print(f"⚠️ Error in monitoring: {e}")
             sys.stdout.flush()
             import traceback
             traceback.print_exc()
             sys.stdout.flush()
-            # Try fallback monitoring method
-            print("🔄 Trying fallback monitoring...")
-            sys.stdout.flush()
-            try:
-                self.run_extinct_monitoring()
-            except Exception as e2:
-                print(f"❌ Fallback monitoring also failed: {e2}")
-                sys.stdout.flush()
 
 # Entry point
 if __name__ == "__main__":
