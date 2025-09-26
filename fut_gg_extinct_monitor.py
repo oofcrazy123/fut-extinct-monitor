@@ -254,7 +254,7 @@ class FutGGExtinctMonitor:
 
     def scrape_fut_gg_players_sorted(self, page=1):
         """
-        Scrape players from fut.gg sorted by current price (extinct first)
+        Scrape players by extracting IDs from JavaScript and matching with HTML data
         """
         url = f"https://www.fut.gg/players/?page={page}&sorts=current_price"
         
@@ -271,40 +271,36 @@ class FutGGExtinctMonitor:
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
             
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
             print(f"🐛 DEBUG Page {page}: Response status {response.status_code}, content length {len(response.content)}")
             
-            # Look for price containers that contain a coin image
-            # This is more specific than the generic flex class
-            price_containers = soup.find_all('div', class_="flex items-center justify-center grow shrink-0 gap-[0.1em]")
+            # Extract player IDs from JavaScript
+            import re
+            js_content = response.text
             
-            # Filter to only containers that have a coin image (price containers)
-            actual_price_containers = []
-            for container in price_containers:
-                coin_img = container.find('img', alt="Coin")
-                if coin_img:
-                    actual_price_containers.append(container)
+            # Find the playerPrices array in the JavaScript
+            player_ids_pattern = r'"market","playerPrices",\$R\[\d+\]=\[([0-9,]+)\]'
+            matches = re.search(player_ids_pattern, js_content)
             
-            print(f"🐛 DEBUG Page {page}: Found {len(price_containers)} flex containers, {len(actual_price_containers)} with coin images")
+            player_ids = []
+            if matches:
+                ids_string = matches.group(1)
+                player_ids = [int(id_str.strip()) for id_str in ids_string.split(',') if id_str.strip()]
+                print(f"🐛 DEBUG Page {page}: Found {len(player_ids)} player IDs in JavaScript: {player_ids[:5]}...")
+            else:
+                print(f"🐛 DEBUG Page {page}: No player IDs found in JavaScript")
+                return []
             
-            # Get all player links to match with price containers
-            player_links = soup.find_all('a', class_="group/player animate-in fade-in -mt-8 lg:-mt-9 xl:-mt-10")
-            print(f"🐛 DEBUG Page {page}: Found {len(player_links)} player links")
+            # Parse HTML to get player data
+            soup = BeautifulSoup(response.content, 'html.parser')
+            player_imgs = soup.find_all('img', alt=lambda x: x and ' - ' in str(x) and len(str(x).split(' - ')) >= 2)
+            print(f"🐛 DEBUG Page {page}: Found {len(player_imgs)} player images")
             
             cards = []
             
-            # Try to match player links with price containers
-            for i, link in enumerate(player_links):
+            # Process each player image
+            for i, img in enumerate(player_imgs):
                 try:
-                    # Extract player name from the href or find img in the link
-                    href = link.get('href', '')
-                    player_img = link.find('img', alt=lambda x: x and ' - ' in str(x))
-                    
-                    if not player_img:
-                        continue
-                        
-                    alt_text = player_img.get('alt', '')
+                    alt_text = img.get('alt', '')
                     parts = alt_text.split(' - ')
                     
                     if len(parts) >= 2:
@@ -314,28 +310,47 @@ class FutGGExtinctMonitor:
                         except ValueError:
                             continue
                         
-                        # Try to find the corresponding price container
-                        is_extinct = False
+                        # Try to find player URL to extract player ID
+                        player_url = ""
+                        player_id = None
                         
-                        # Look for price container in the same parent structure
-                        parent_container = link.parent
-                        for _ in range(5):  # Search up the DOM tree
-                            if parent_container:
-                                price_container = parent_container.find('div', class_="flex items-center justify-center grow shrink-0 gap-[0.1em]")
-                                if price_container:
-                                    coin_img = price_container.find('img', alt="Coin")
-                                    if coin_img:
-                                        # Check the text content of this price container
-                                        price_text = price_container.get_text(strip=True).upper()
-                                        is_extinct = 'EXTINCT' in price_text
-                                        print(f"🐛 DEBUG Page {page}: {player_name} price container: '{price_text}' - Extinct: {is_extinct}")
-                                        break
-                                parent_container = parent_container.parent
+                        link_parent = img.parent
+                        for _ in range(5):
+                            if link_parent:
+                                link = link_parent.find('a', href=lambda x: x and '/players/' in str(x))
+                                if link:
+                                    href = link.get('href', '')
+                                    if href.startswith('/'):
+                                        player_url = f"https://www.fut.gg{href}"
+                                    else:
+                                        player_url = href
+                                    
+                                    # Extract player ID from URL
+                                    # URL format is typically like /players/123456-player-name
+                                    url_parts = href.split('/')
+                                    for part in url_parts:
+                                        if '-' in part:
+                                            potential_id = part.split('-')[0]
+                                            if potential_id.isdigit():
+                                                player_id = int(potential_id)
+                                                break
+                                    break
+                                link_parent = link_parent.parent
                             else:
                                 break
                         
-                        # Build player URL
-                        player_url = f"https://www.fut.gg{href}" if href.startswith('/') else href
+                        # Determine if extinct based on whether player ID is in the JavaScript array
+                        # If player has ID but isn't in the price query array, likely extinct
+                        is_extinct = False
+                        if player_id:
+                            # Check if this player ID is in our extracted list
+                            if i < len(player_ids):
+                                # Assume players are in order - check if IDs match expected pattern
+                                expected_id = player_ids[i] if i < len(player_ids) else None
+                                # If the player ID pattern suggests this should have price data but doesn't, it's extinct
+                                is_extinct = (player_id not in player_ids and len(player_ids) < len(player_imgs))
+                            
+                            print(f"🐛 DEBUG Page {page}: {player_name} (ID: {player_id}) - In price array: {player_id in player_ids}")
                         
                         card_data = {
                             'name': player_name,
@@ -347,7 +362,7 @@ class FutGGExtinctMonitor:
                             'card_type': 'Gold' if rating >= 75 else 'Silver' if rating >= 65 else 'Bronze',
                             'fut_gg_url': player_url,
                             'appears_extinct': is_extinct,
-                            'fut_gg_id': self.extract_fut_gg_id(player_url) if player_url else None
+                            'fut_gg_id': str(player_id) if player_id else None
                         }
                         
                         cards.append(card_data)
@@ -360,7 +375,7 @@ class FutGGExtinctMonitor:
                     continue
             
             extinct_count = sum(1 for c in cards if c.get('appears_extinct', False))
-            print(f"📄 Page {page}: Found {len(cards)} cards, {extinct_count} appear extinct")
+            print(f"📄 Page {page}: Found {len(cards)} cards, {len(player_ids)} price IDs, {extinct_count} appear extinct")
             return cards
             
         except requests.exceptions.RequestException as e:
