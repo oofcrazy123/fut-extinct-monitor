@@ -555,24 +555,79 @@ class FutGGExtinctMonitor:
             print(f"⚠️ Error updating extinction status for {player_name}: {e}")
 
     def send_extinction_alerts(self, newly_extinct_cards):
-        """Send alerts for newly extinct players"""
+        """Send individual clean alerts for each newly extinct player"""
         if not newly_extinct_cards:
             return
+        
+        print(f"Sending individual alerts for {len(newly_extinct_cards)} extinct players...")
+        
+        # Send individual notification for each extinct player
+        for card in newly_extinct_cards:
+            # Clean format: just name and rating
+            message = f"EXTINCT: {card.get('name', 'Unknown')} ({card.get('rating', '?')})"
             
-        message_parts = ["🚨 NEW EXTINCT PLAYERS DETECTED! 🚨\n"]
+            # Send to Telegram
+            self.send_telegram_notification(message)
+            
+            # Send to Discord  
+            if Config.DISCORD_WEBHOOK_URL:
+                embed = {
+                    "title": "Player Extinct",
+                    "description": f"{card.get('name', 'Unknown')} - Rating {card.get('rating', '?')}",
+                    "color": 0xff0000,
+                    "timestamp": datetime.now().isoformat(),
+                    "fields": [
+                        {
+                            "name": "Status",
+                            "value": "EXTINCT",
+                            "inline": True
+                        },
+                        {
+                            "name": "Rating", 
+                            "value": str(card.get('rating', '?')),
+                            "inline": True
+                        }
+                    ]
+                }
+                
+                # Add URL if available
+                if card.get('fut_gg_url'):
+                    embed["url"] = card.get('fut_gg_url')
+                
+                payload = {"embeds": [embed]}
+                
+                try:
+                    response = requests.post(Config.DISCORD_WEBHOOK_URL, json=payload)
+                    if response.status_code == 204:
+                        print(f"Individual Discord alert sent for {card.get('name')}")
+                    else:
+                        print(f"Discord error for {card.get('name')}: {response.status_code}")
+                except Exception as e:
+                    print(f"Discord error for {card.get('name')}: {e}")
+            
+            # Small delay between individual notifications to avoid spam
+            time.sleep(0.5)
         
-        for card in newly_extinct_cards[:10]:  # Limit to 10 to avoid spam
-            message_parts.append(
-                f"💀 {card.get('name', 'Unknown')} "
-                f"({card.get('rating', '?')}) - {card.get('position', '?')}"
-            )
+        # Send a clean summary if multiple players went extinct
+        if len(newly_extinct_cards) > 1:
+            summary = f"Summary: {len(newly_extinct_cards)} players went extinct"
+            self.send_telegram_notification(summary)
+            
+            if Config.DISCORD_WEBHOOK_URL:
+                summary_embed = {
+                    "title": "Extinction Summary",
+                    "description": f"{len(newly_extinct_cards)} players went extinct",
+                    "color": 0xff6600,
+                    "timestamp": datetime.now().isoformat()
+                }
+                summary_payload = {"embeds": [summary_embed]}
+                
+                try:
+                    requests.post(Config.DISCORD_WEBHOOK_URL, json=summary_payload)
+                except Exception as e:
+                    print(f"Discord summary error: {e}")
         
-        if len(newly_extinct_cards) > 10:
-            message_parts.append(f"... and {len(newly_extinct_cards) - 10} more!")
-        
-        full_message = "\n".join(message_parts)
-        
-        self.send_notification_to_all(full_message, "🚨 NEW EXTINCTIONS")
+        print(f"Completed sending {len(newly_extinct_cards)} individual extinction alerts")
     
     def send_availability_alerts(self, no_longer_extinct_cards):
         """Send alerts for players no longer extinct"""
