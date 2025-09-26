@@ -254,7 +254,7 @@ class FutGGExtinctMonitor:
 
     def scrape_fut_gg_players_sorted(self, page=1):
         """
-        Scrape players by extracting IDs from JavaScript and matching with HTML data
+        Extract extinct status from embedded JavaScript player data
         """
         url = f"https://www.fut.gg/players/?page={page}&sorts=current_price"
         
@@ -273,31 +273,30 @@ class FutGGExtinctMonitor:
             
             print(f"🐛 DEBUG Page {page}: Response status {response.status_code}, content length {len(response.content)}")
             
-            # Extract player IDs from JavaScript - CORRECTED VERSION
+            # Extract player data from JavaScript objects
             import re
             js_content = response.text
             
-            # Find the playerPrices array in the JavaScript
-            player_ids_pattern = r'"market","playerPrices",\$R\[\d+\]=\[([0-9,]+)\]'
-            matches = re.search(player_ids_pattern, js_content)
+            # Look for patterns like currentDbPrice:null or currentDbPrice:1234
+            price_pattern = r'currentDbPrice:(null|\d+)'
+            price_matches = re.findall(price_pattern, js_content)
             
-            player_ids = []
-            if matches:
-                ids_string = matches.group(1)
-                player_ids = [int(id_str.strip()) for id_str in ids_string.split(',') if id_str.strip()]
-                print(f"🐛 DEBUG Page {page}: Found {len(player_ids)} player IDs in JavaScript: {player_ids[:5]}...")
-            else:
-                print(f"🐛 DEBUG Page {page}: No player IDs found in JavaScript")
-                return []
+            print(f"🐛 DEBUG Page {page}: Found {len(price_matches)} currentDbPrice entries")
             
-            # Parse HTML to get player data
+            # Count null vs non-null prices
+            extinct_count = sum(1 for price in price_matches if price == 'null')
+            available_count = len(price_matches) - extinct_count
+            
+            print(f"🐛 DEBUG Page {page}: {extinct_count} null prices (extinct), {available_count} with prices (available)")
+            
+            # Parse HTML to get player names for matching
             soup = BeautifulSoup(response.content, 'html.parser')
             player_imgs = soup.find_all('img', alt=lambda x: x and ' - ' in str(x) and len(str(x).split(' - ')) >= 2)
             print(f"🐛 DEBUG Page {page}: Found {len(player_imgs)} player images")
             
             cards = []
             
-            # Process each player image and match with corresponding ID by INDEX
+            # Process each player and match with price data
             for i, img in enumerate(player_imgs):
                 try:
                     alt_text = img.get('alt', '')
@@ -310,8 +309,11 @@ class FutGGExtinctMonitor:
                         except ValueError:
                             continue
                         
-                        # Get the corresponding player ID by index position
-                        player_id = player_ids[i] if i < len(player_ids) else None
+                        # Determine extinct status based on corresponding price entry
+                        is_extinct = False
+                        if i < len(price_matches):
+                            price_value = price_matches[i]
+                            is_extinct = (price_value == 'null')
                         
                         # Try to find player URL
                         player_url = ""
@@ -330,18 +332,7 @@ class FutGGExtinctMonitor:
                             else:
                                 break
                         
-                        # Determine if extinct based on position vs available price IDs
-                        # If we have fewer price IDs than players, the players without IDs are likely extinct
-                        is_extinct = (i >= len(player_ids))
-                        
-                        # Alternative logic: if there are exactly 30 players but fewer than 30 price IDs,
-                        # the missing ones are extinct
-                        if len(player_imgs) == 30 and len(player_ids) < 30:
-                            is_extinct = (i >= len(player_ids))
-                        else:
-                            is_extinct = False
-                        
-                        print(f"🐛 DEBUG Page {page}: {player_name} (Position: {i+1}, ID: {player_id}) - Extinct: {is_extinct}")
+                        print(f"🐛 DEBUG Page {page}: {player_name} (Position: {i+1}) - Price: {price_matches[i] if i < len(price_matches) else 'unknown'} - Extinct: {is_extinct}")
                         
                         card_data = {
                             'name': player_name,
@@ -353,7 +344,7 @@ class FutGGExtinctMonitor:
                             'card_type': 'Gold' if rating >= 75 else 'Silver' if rating >= 65 else 'Bronze',
                             'fut_gg_url': player_url,
                             'appears_extinct': is_extinct,
-                            'fut_gg_id': str(player_id) if player_id else None
+                            'fut_gg_id': None
                         }
                         
                         cards.append(card_data)
@@ -362,13 +353,8 @@ class FutGGExtinctMonitor:
                     print(f"🐛 DEBUG Page {page}: Error processing player {i}: {e}")
                     continue
             
-            extinct_count = sum(1 for c in cards if c.get('appears_extinct', False))
-            print(f"📄 Page {page}: Found {len(cards)} cards, {len(player_ids)} price IDs, {extinct_count} appear extinct")
-            
-            # Show detailed breakdown
-            if len(player_ids) != len(player_imgs):
-                print(f"🎯 EXTINCTION DETECTED: {len(player_imgs)} players but only {len(player_ids)} price IDs")
-                print(f"🎯 Players {len(player_ids)+1}-{len(player_imgs)} are likely EXTINCT")
+            total_extinct = sum(1 for c in cards if c.get('appears_extinct', False))
+            print(f"📄 Page {page}: Found {len(cards)} cards, {total_extinct} appear extinct")
             
             return cards
             
