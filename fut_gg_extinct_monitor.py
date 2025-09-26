@@ -246,7 +246,7 @@ class FutGGExtinctMonitor:
         return extinct_players
 
     def check_individual_player_extinct(self, player_name):
-        """Check if a specific player is still extinct by searching fut.gg"""
+        """Check if a specific player is still extinct and extract their details"""
         try:
             # Search for the player on fut.gg
             search_url = f"https://www.fut.gg/players/?search={player_name.replace(' ', '+')}"
@@ -263,23 +263,67 @@ class FutGGExtinctMonitor:
             soup = BeautifulSoup(response.content, 'html.parser')
             
             # Look for the player in search results
-            player_found = False
             player_imgs = soup.find_all('img', alt=lambda x: x and player_name.lower() in str(x).lower())
             
             if player_imgs:
-                # Found the player, now check if they have "EXTINCT" in their price area
+                # Found the player, extract details and check extinction status
                 for img in player_imgs:
-                    # Find the price container for this player
+                    alt_text = img.get('alt', '')
+                    
+                    # Extract rating from alt text (format: "Player Name - Rating")
+                    rating = '?'
+                    if ' - ' in alt_text:
+                        parts = alt_text.split(' - ')
+                        if len(parts) >= 2:
+                            try:
+                                rating = int(parts[1].strip())
+                            except ValueError:
+                                rating = '?'
+                    
+                    # Find the card container for this player
                     card_container = img.find_parent(['div', 'article', 'section'])
                     if card_container:
                         container_text = card_container.get_text().upper()
+                        
+                        # Try to find the player link for fut.gg URL
+                        player_url = None
+                        player_links = card_container.find_all('a', href=lambda x: x and '/players/' in str(x))
+                        if player_links:
+                            href = player_links[0].get('href', '')
+                            if href.startswith('/'):
+                                player_url = f"https://www.fut.gg{href}"
+                            else:
+                                player_url = href
+                        
+                        # Check extinction status
                         if "EXTINCT" in container_text:
-                            return True  # Still extinct
+                            return {
+                                'extinct': True,
+                                'player_data': {
+                                    'name': player_name,
+                                    'rating': rating,
+                                    'fut_gg_url': player_url
+                                }
+                            }
                         else:
-                            return False  # Has price, not extinct
+                            return {
+                                'extinct': False,
+                                'player_data': {
+                                    'name': player_name,
+                                    'rating': rating,
+                                    'fut_gg_url': player_url
+                                }
+                            }
                 
                 # If we found the player but no explicit extinct text, assume not extinct
-                return False
+                return {
+                    'extinct': False,
+                    'player_data': {
+                        'name': player_name,
+                        'rating': '?',
+                        'fut_gg_url': None
+                    }
+                }
             
             # Player not found in search - might be extinct or search failed
             return None  # Uncertain
@@ -326,13 +370,13 @@ class FutGGExtinctMonitor:
                     
                     for player_name in sample_to_check:
                         print(f"Checking {player_name}...")
-                        still_extinct = self.check_individual_player_extinct(player_name)
+                        result = self.check_individual_player_extinct(player_name)
                         
-                        if still_extinct is False:  # Explicitly not extinct
-                            no_longer_extinct.append({'name': player_name, 'rating': '?'})
+                        if result and result['extinct'] is False:  # Explicitly not extinct
+                            no_longer_extinct.append(result['player_data'])
                             player_status_tracker[player_name] = 'available'
                             print(f"✅ BACK TO MARKET: {player_name}")
-                        elif still_extinct is True:
+                        elif result and result['extinct'] is True:
                             print(f"🔥 Still extinct: {player_name}")
                         else:
                             print(f"❓ Uncertain status: {player_name}")
@@ -439,24 +483,110 @@ class FutGGExtinctMonitor:
         print(f"Completed sending {len(newly_extinct_cards)} individual extinction alerts")
     
     def send_availability_alerts(self, no_longer_extinct_cards):
-        """Send alerts for players no longer extinct"""
+        """Send enhanced alerts for players no longer extinct"""
         if not no_longer_extinct_cards:
             return
+        
+        # Send individual Discord embeds for each player back in market
+        for card in no_longer_extinct_cards:
+            # Enhanced Telegram message
+            telegram_message = f"✅ BACK IN MARKET: {card.get('name', 'Unknown')} ({card.get('rating', '?')})"
+            self.send_telegram_notification(telegram_message)
             
-        message_parts = ["✅ PLAYERS BACK IN MARKET! ✅\n"]
+            # Enhanced Discord embed for each player
+            if Config.DISCORD_WEBHOOK_URL:
+                embed = {
+                    "title": f"✅ {card.get('name', 'Unknown')} Back in Market!",
+                    "description": f"This player is now available for purchase again",
+                    "color": 0x00ff00,  # Green color for positive news
+                    "timestamp": datetime.now().isoformat(),
+                    "fields": [
+                        {
+                            "name": "🔄 Status",
+                            "value": "Available",
+                            "inline": True
+                        },
+                        {
+                            "name": "⭐ Rating",
+                            "value": str(card.get('rating', '?')),
+                            "inline": True
+                        },
+                        {
+                            "name": "💰 Action",
+                            "value": "Ready to buy!",
+                            "inline": True
+                        }
+                    ],
+                    "footer": {
+                        "text": "FUT.GG Extinct Monitor",
+                        "icon_url": "https://www.fut.gg/favicon.ico"
+                    }
+                }
+                
+                # Add player URL if available
+                if card.get('fut_gg_url'):
+                    embed["url"] = card.get('fut_gg_url')
+                    embed["fields"].append({
+                        "name": "🔗 Link",
+                        "value": f"[View on FUT.GG]({card.get('fut_gg_url')})",
+                        "inline": False
+                    })
+                
+                payload = {"embeds": [embed]}
+                
+                try:
+                    response = requests.post(Config.DISCORD_WEBHOOK_URL, json=payload)
+                    if response.status_code == 204:
+                        print(f"Individual Discord availability alert sent for {card.get('name')}")
+                    else:
+                        print(f"Discord error for {card.get('name')}: {response.status_code}")
+                except Exception as e:
+                    print(f"Discord error for {card.get('name')}: {e}")
+            
+            # Small delay between notifications
+            time.sleep(0.5)
         
-        for card in no_longer_extinct_cards[:10]:  # Limit to 10 to avoid spam
-            message_parts.append(
-                f"💚 {card.get('name', 'Unknown')} "
-                f"({card.get('rating', '?')}) - {card.get('position', '?')}"
-            )
+        # Send summary if multiple players became available
+        if len(no_longer_extinct_cards) > 1:
+            summary_message = f"✅ SUMMARY: {len(no_longer_extinct_cards)} players are back in market!"
+            self.send_telegram_notification(summary_message)
+            
+            if Config.DISCORD_WEBHOOK_URL:
+                # Create a summary embed with all players
+                player_list = []
+                for card in no_longer_extinct_cards[:10]:  # Limit to 10 in summary
+                    player_list.append(f"✅ **{card.get('name', 'Unknown')}** ({card.get('rating', '?')})")
+                
+                if len(no_longer_extinct_cards) > 10:
+                    player_list.append(f"... and {len(no_longer_extinct_cards) - 10} more!")
+                
+                summary_embed = {
+                    "title": f"🎉 {len(no_longer_extinct_cards)} Players Back in Market!",
+                    "description": "\n".join(player_list),
+                    "color": 0x00ff88,  # Bright green
+                    "timestamp": datetime.now().isoformat(),
+                    "fields": [
+                        {
+                            "name": "💡 Tip",
+                            "value": "These players were previously extinct and are now available for purchase!",
+                            "inline": False
+                        }
+                    ],
+                    "footer": {
+                        "text": "FUT.GG Extinct Monitor - Market Update",
+                        "icon_url": "https://www.fut.gg/favicon.ico"
+                    }
+                }
+                
+                summary_payload = {"embeds": [summary_embed]}
+                
+                try:
+                    requests.post(Config.DISCORD_WEBHOOK_URL, json=summary_payload)
+                    print(f"Discord summary sent for {len(no_longer_extinct_cards)} available players")
+                except Exception as e:
+                    print(f"Discord summary error: {e}")
         
-        if len(no_longer_extinct_cards) > 10:
-            message_parts.append(f"... and {len(no_longer_extinct_cards) - 10} more!")
-        
-        full_message = "\n".join(message_parts)
-        
-        self.send_notification_to_all(full_message, "✅ BACK IN MARKET")
+        print(f"Completed sending availability alerts for {len(no_longer_extinct_cards)} players")
 
     def send_telegram_notification(self, message):
         """Send notification to Telegram"""
