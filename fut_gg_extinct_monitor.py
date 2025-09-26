@@ -273,7 +273,7 @@ class FutGGExtinctMonitor:
             
             print(f"🐛 DEBUG Page {page}: Response status {response.status_code}, content length {len(response.content)}")
             
-            # Extract player IDs from JavaScript
+            # Extract player IDs from JavaScript - CORRECTED VERSION
             import re
             js_content = response.text
             
@@ -297,7 +297,7 @@ class FutGGExtinctMonitor:
             
             cards = []
             
-            # Process each player image
+            # Process each player image and match with corresponding ID by INDEX
             for i, img in enumerate(player_imgs):
                 try:
                     alt_text = img.get('alt', '')
@@ -310,10 +310,11 @@ class FutGGExtinctMonitor:
                         except ValueError:
                             continue
                         
-                        # Try to find player URL to extract player ID
-                        player_url = ""
-                        player_id = None
+                        # Get the corresponding player ID by index position
+                        player_id = player_ids[i] if i < len(player_ids) else None
                         
+                        # Try to find player URL
+                        player_url = ""
                         link_parent = img.parent
                         for _ in range(5):
                             if link_parent:
@@ -324,33 +325,23 @@ class FutGGExtinctMonitor:
                                         player_url = f"https://www.fut.gg{href}"
                                     else:
                                         player_url = href
-                                    
-                                    # Extract player ID from URL
-                                    # URL format is typically like /players/123456-player-name
-                                    url_parts = href.split('/')
-                                    for part in url_parts:
-                                        if '-' in part:
-                                            potential_id = part.split('-')[0]
-                                            if potential_id.isdigit():
-                                                player_id = int(potential_id)
-                                                break
                                     break
                                 link_parent = link_parent.parent
                             else:
                                 break
                         
-                        # Determine if extinct based on whether player ID is in the JavaScript array
-                        # If player has ID but isn't in the price query array, likely extinct
-                        is_extinct = False
-                        if player_id:
-                            # Check if this player ID is in our extracted list
-                            if i < len(player_ids):
-                                # Assume players are in order - check if IDs match expected pattern
-                                expected_id = player_ids[i] if i < len(player_ids) else None
-                                # If the player ID pattern suggests this should have price data but doesn't, it's extinct
-                                is_extinct = (player_id not in player_ids and len(player_ids) < len(player_imgs))
-                            
-                            print(f"🐛 DEBUG Page {page}: {player_name} (ID: {player_id}) - In price array: {player_id in player_ids}")
+                        # Determine if extinct based on position vs available price IDs
+                        # If we have fewer price IDs than players, the players without IDs are likely extinct
+                        is_extinct = (i >= len(player_ids))
+                        
+                        # Alternative logic: if there are exactly 30 players but fewer than 30 price IDs,
+                        # the missing ones are extinct
+                        if len(player_imgs) == 30 and len(player_ids) < 30:
+                            is_extinct = (i >= len(player_ids))
+                        else:
+                            is_extinct = False
+                        
+                        print(f"🐛 DEBUG Page {page}: {player_name} (Position: {i+1}, ID: {player_id}) - Extinct: {is_extinct}")
                         
                         card_data = {
                             'name': player_name,
@@ -366,9 +357,6 @@ class FutGGExtinctMonitor:
                         }
                         
                         cards.append(card_data)
-                        
-                        if is_extinct or i < 5:
-                            print(f"🐛 DEBUG Page {page}: Player {i+1}: {player_name} ({rating}) - Extinct: {is_extinct}")
                     
                 except Exception as e:
                     print(f"🐛 DEBUG Page {page}: Error processing player {i}: {e}")
@@ -376,6 +364,12 @@ class FutGGExtinctMonitor:
             
             extinct_count = sum(1 for c in cards if c.get('appears_extinct', False))
             print(f"📄 Page {page}: Found {len(cards)} cards, {len(player_ids)} price IDs, {extinct_count} appear extinct")
+            
+            # Show detailed breakdown
+            if len(player_ids) != len(player_imgs):
+                print(f"🎯 EXTINCTION DETECTED: {len(player_imgs)} players but only {len(player_ids)} price IDs")
+                print(f"🎯 Players {len(player_ids)+1}-{len(player_imgs)} are likely EXTINCT")
+            
             return cards
             
         except requests.exceptions.RequestException as e:
