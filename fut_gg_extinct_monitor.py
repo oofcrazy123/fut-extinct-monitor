@@ -315,22 +315,55 @@ class FutGGExtinctMonitor:
                             price_value = price_matches[i]
                             is_extinct = (price_value == 'null')
                         
-                        # Try to find player URL
+                        # FIXED: Find the specific player URL for THIS player
                         player_url = ""
-                        link_parent = img.parent
-                        for _ in range(5):
-                            if link_parent:
-                                link = link_parent.find('a', href=lambda x: x and '/players/' in str(x))
-                                if link:
+                        
+                        # Look for the closest parent container that contains both the image and the correct link
+                        current_element = img
+                        for level in range(8):  # Search up the DOM tree
+                            if current_element and current_element.parent:
+                                parent = current_element.parent
+                                
+                                # Look for ALL player links in this container
+                                player_links = parent.find_all('a', href=lambda x: x and '/players/' in str(x))
+                                
+                                for link in player_links:
                                     href = link.get('href', '')
-                                    if href.startswith('/'):
-                                        player_url = f"https://www.fut.gg{href}"
-                                    else:
-                                        player_url = href
+                                    
+                                    # Extract player name from URL to match with our player
+                                    if '/players/' in href:
+                                        url_parts = href.split('/')
+                                        for part in url_parts:
+                                            if '-' in part and any(char.isalpha() for char in part):
+                                                # URL format is usually like "123456-player-name-here"
+                                                url_name_part = part.split('-', 1)
+                                                if len(url_name_part) > 1:
+                                                    url_name = url_name_part[1].replace('-', ' ').strip()
+                                                    
+                                                    # Check if this URL name matches our player name
+                                                    if (player_name.lower().replace(' ', '') in url_name.lower().replace(' ', '') or
+                                                        url_name.lower().replace(' ', '') in player_name.lower().replace(' ', '')):
+                                                        
+                                                        if href.startswith('/'):
+                                                            player_url = f"https://www.fut.gg{href}"
+                                                        else:
+                                                            player_url = href
+                                                        break
+                                    
+                                    if player_url:
+                                        break
+                                
+                                if player_url:
+                                    print(f"🐛 DEBUG Page {page}: Found matching URL for {player_name}: {player_url}")
                                     break
-                                link_parent = link_parent.parent
+                                
+                                current_element = parent
                             else:
                                 break
+                        
+                        # If we couldn't find a matching URL, don't include any URL to avoid mismatches
+                        if not player_url:
+                            print(f"🐛 DEBUG Page {page}: Could not find matching URL for {player_name}")
                         
                         print(f"🐛 DEBUG Page {page}: {player_name} (Position: {i+1}) - Price: {price_matches[i] if i < len(price_matches) else 'unknown'} - Extinct: {is_extinct}")
                         
@@ -342,7 +375,7 @@ class FutGGExtinctMonitor:
                             'nation': 'Unknown',
                             'league': 'Unknown',
                             'card_type': 'Gold' if rating >= 75 else 'Silver' if rating >= 65 else 'Bronze',
-                            'fut_gg_url': player_url,
+                            'fut_gg_url': player_url if player_url else None,  # Only include if we found a match
                             'appears_extinct': is_extinct,
                             'fut_gg_id': None
                         }
