@@ -438,7 +438,7 @@ class FutGGExtinctMonitor:
             return None
 
     def get_additional_player_info(self, fut_gg_url):
-        """Get additional player info by checking the player page"""
+        """Get additional player info by parsing the player page HTML"""
         try:
             headers = {
                 'User-Agent': random.choice(self.user_agents),
@@ -453,29 +453,60 @@ class FutGGExtinctMonitor:
             
             info = {}
             
-            # Try to find club information
-            club_links = soup.find_all('a', href=lambda x: x and '/clubs/' in str(x))
-            if club_links:
-                club_link = club_links[0]
-                href = club_link.get('href', '')
-                if '/clubs/' in href:
-                    # Extract club name from URL like /clubs/73-paris-sg/
-                    club_part = href.split('/clubs/')[-1].rstrip('/')
-                    if '-' in club_part:
-                        club_name = club_part.split('-', 1)[1].replace('-', ' ').title()
-                        info['club'] = club_name
+            # Look for the paper div containing player info
+            paper_div = soup.find('div', class_='paper !bg-darker-gray mb-4 !p-4 hidden md:block')
             
-            # Try to find position
-            position_text = soup.get_text()
-            positions = ['ST', 'CF', 'LW', 'RW', 'CAM', 'CM', 'CDM', 'LB', 'RB', 'CB', 'GK']
+            if paper_div:
+                # Find all the flex containers with labels
+                flex_containers = paper_div.find_all('div', class_='flex justify-between')
+                flex_containers.extend(paper_div.find_all('div', class_='flex justify-between flex-row mt-2'))
+                
+                for container in flex_containers:
+                    # Find the label (text-lighter-gray div)
+                    label_div = container.find('div', class_='text-lighter-gray')
+                    if label_div:
+                        label_text = label_div.get_text(strip=True)
+                        
+                        if label_text == 'Club':
+                            # Get the next div which contains the club info
+                            club_container = label_div.find_next_sibling('div')
+                            if club_container:
+                                club_link = club_container.find('a')
+                                if club_link:
+                                    # Extract club name from the link text
+                                    club_name = club_link.get_text(strip=True)
+                                    if club_name:
+                                        info['club'] = club_name
+                                else:
+                                    # If no link, get text directly
+                                    club_text = club_container.get_text(strip=True)
+                                    if club_text:
+                                        info['club'] = club_text
+                        
+                        elif label_text == 'Nation':
+                            # Get nation info similarly
+                            nation_container = label_div.find_next_sibling('div')
+                            if nation_container:
+                                nation_link = nation_container.find('a')
+                                if nation_link:
+                                    nation_name = nation_link.get_text(strip=True)
+                                    if nation_name:
+                                        info['nation'] = nation_name
+            
+            # Try to find position from the card display (usually visible as large text)
+            # Look for position indicators like "GK", "ST", etc.
+            page_text = soup.get_text()
+            positions = ['GK', 'ST', 'CF', 'LW', 'RW', 'CAM', 'CM', 'CDM', 'LB', 'RB', 'CB', 'LWB', 'RWB', 'RM', 'LM']
             for pos in positions:
-                if pos in position_text:
+                # Look for position as standalone text (not part of other words)
+                if f' {pos} ' in f' {page_text} ' or f'\n{pos}\n' in page_text:
                     info['position'] = pos
                     break
             
             return info
             
         except Exception as e:
+            print(f"Error getting additional player info: {e}")
             return {}
         """Update last_checked timestamp for player"""
         try:
