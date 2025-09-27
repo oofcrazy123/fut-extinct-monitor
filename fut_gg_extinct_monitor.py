@@ -159,12 +159,22 @@ class FutGGExtinctMonitor:
             except:
                 pass
 
-    def discover_extinct_players(self, max_pages=20):
+    def discover_extinct_players(self, max_pages=None):
         """Discover extinct players and store them in database"""
         print("🔍 Discovering extinct players...")
         discovered_count = 0
+        page = 1
+        consecutive_empty_pages = 0
         
-        for page in range(1, max_pages + 1):
+        while True:
+            # Safety limit - don't go beyond 200 pages
+            if max_pages and page > max_pages:
+                print(f"Reached maximum page limit ({max_pages}), stopping discovery")
+                break
+            if page > 200:
+                print("Reached safety limit of 200 pages, stopping discovery")
+                break
+                
             url = f"https://www.fut.gg/players/?page={page}&price__lte=0"
             
             try:
@@ -181,8 +191,20 @@ class FutGGExtinctMonitor:
                 player_links = soup.find_all('a', href=lambda x: x and '/players/' in str(x))
                 
                 if not player_links:
-                    print(f"No more extinct players found at page {page}, stopping discovery")
-                    break
+                    consecutive_empty_pages += 1
+                    print(f"Page {page}: No player links found (empty page {consecutive_empty_pages})")
+                    
+                    # If we hit 3 consecutive empty pages, we've reached the end
+                    if consecutive_empty_pages >= 3:
+                        print(f"Found 3 consecutive empty pages, stopping discovery at page {page}")
+                        break
+                    
+                    page += 1
+                    time.sleep(random.uniform(1, 2))
+                    continue
+                
+                # Reset consecutive empty counter since we found players
+                consecutive_empty_pages = 0
                 
                 page_discovered = 0
                 
@@ -225,13 +247,26 @@ class FutGGExtinctMonitor:
                         continue
                 
                 print(f"Page {page}: Discovered {page_discovered} new extinct players")
+                
+                # If we found no new players on this page, it might mean we've already tracked them all
+                if page_discovered == 0:
+                    consecutive_empty_pages += 1
+                    if consecutive_empty_pages >= 5:
+                        print(f"Found 5 consecutive pages with no new players, likely reached end of new extinctions")
+                        break
+                else:
+                    consecutive_empty_pages = 0
+                
+                page += 1
                 time.sleep(random.uniform(1, 2))
                 
             except Exception as e:
                 print(f"Error discovering extinct players on page {page}: {e}")
-                break
+                page += 1
+                time.sleep(random.uniform(2, 4))
+                continue
         
-        print(f"🎯 Discovery complete! Found {discovered_count} new extinct players")
+        print(f"🎯 Discovery complete! Found {discovered_count} new extinct players across {page-1} pages")
         return discovered_count
 
     def store_extinct_player(self, name, rating, fut_gg_url):
@@ -728,7 +763,7 @@ class FutGGExtinctMonitor:
         def discovery_thread():
             while True:
                 try:
-                    discovered = self.discover_extinct_players(max_pages=15)
+                    discovered = self.discover_extinct_players()  # No page limit
                     print(f"Discovery thread: Found {discovered} new extinct players")
                     time.sleep(1800)  # Run discovery every 30 minutes
                 except Exception as e:
@@ -741,7 +776,7 @@ class FutGGExtinctMonitor:
         print("🔍 Discovery thread started")
         
         # Run initial discovery
-        self.discover_extinct_players(max_pages=20)
+        self.discover_extinct_players()  # No page limit
         
         # Start monitoring loop
         self.monitor_database_players()
