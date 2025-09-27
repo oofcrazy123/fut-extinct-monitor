@@ -14,6 +14,13 @@ monitor = None
 monitor_thread = None
 is_running = False
 
+def get_db_path():
+    """Get the correct database path"""
+    if os.getenv('RENDER_EXTERNAL_HOSTNAME'):
+        return "/opt/render/project/src/fut_extinct_cards.db"
+    else:
+        return "fut_extinct_cards.db"
+
 def start_monitor():
     """Start the extinct monitor in background"""
     global monitor, is_running
@@ -120,7 +127,7 @@ def home():
             <p><strong>Target:</strong> Extinct players on FUT.GG</p>
             <p><strong>Check Interval:</strong> Every 5-10 minutes</p>
             <p><strong>Alert Cooldown:</strong> 6 hours per card</p>
-            <p><strong>Monitoring:</strong> Dynamic extinct zone detection</p>
+            <p><strong>Monitoring:</strong> Database-driven URL tracking</p>
         </div>
         
         <div style="background: #f0f8e8; padding: 20px; margin: 20px 0; border-radius: 8px;">
@@ -131,7 +138,7 @@ def home():
         
         <div style="background: #e8f0ff; padding: 20px; margin: 20px 0; border-radius: 8px;">
             <h3>💾 Database Backup</h3>
-            <p><strong>Cards in Database:</strong> <span id="card-count">Loading...</span></p>
+            <p><strong>Extinct Players in Database:</strong> <span id="card-count">Loading...</span></p>
             <div style="margin: 15px 0;">
                 <a href="/download-db" style="padding: 10px 20px; background: #28a745; color: white; text-decoration: none; border-radius: 4px; margin-right: 10px;">
                     Download Database Backup
@@ -153,9 +160,9 @@ def home():
         </div>
         
         <div style="background: #e3f2fd; padding: 20px; margin: 20px 0; border-radius: 8px;">
-            <h3>🎯 Extinct Zone Detection</h3>
-            <p>Using dynamic price-sorted monitoring to focus on pages where extinct players appear first.</p>
-            <p><strong>Strategy:</strong> Monitor pages 1-40 of price-sorted list where extinct players concentrate</p>
+            <h3>🎯 Database-Driven Tracking</h3>
+            <p>Using database storage with URL-based tracking for precise extinct player monitoring.</p>
+            <p><strong>Strategy:</strong> Store extinct players, then monitor specific URLs for status changes</p>
         </div>
         
         <script>
@@ -165,7 +172,7 @@ def home():
                     .then(data => {
                         document.getElementById('status').innerHTML = 
                             '<strong>Monitor Status:</strong> ' + (data.running ? '🟢 Running' : '🔴 Stopped') + '<br>' +
-                            '<strong>Cards in Database:</strong> ' + data.card_count + '<br>' +
+                            '<strong>Extinct Players in Database:</strong> ' + data.card_count + '<br>' +
                             '<strong>Last Update:</strong> ' + data.last_update;
                         
                         document.getElementById('card-count').innerHTML = data.card_count.toLocaleString();
@@ -186,25 +193,27 @@ def home():
 def download_db():
     """Download the current database file"""
     try:
-        # Check if database exists and has data
-        if not os.path.exists('fut_extinct_cards.db'):
+        db_path = get_db_path()
+        
+        # Check if database exists
+        if not os.path.exists(db_path):
             return "No database file found", 404
         
-        # Check if database has cards
-        conn = sqlite3.connect('fut_extinct_cards.db')
+        # Check if database has extinct players
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute('SELECT COUNT(*) FROM cards')
+        cursor.execute('SELECT COUNT(*) FROM extinct_players')
         card_count = cursor.fetchone()[0]
         conn.close()
         
         if card_count == 0:
-            return "Database is empty - no cards to download", 400
+            return "Database is empty - no extinct players to download", 400
         
         # Generate filename with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f'fut_extinct_cards_backup_{timestamp}.db'
         
-        return send_file('fut_extinct_cards.db', 
+        return send_file(db_path, 
                         as_attachment=True, 
                         download_name=filename,
                         mimetype='application/octet-stream')
@@ -252,13 +261,15 @@ def upload_db():
             return "No file selected", 400
         
         if file and file.filename.endswith('.db'):
+            db_path = get_db_path()
+            
             # Save uploaded file as the main database
-            file.save('fut_extinct_cards.db')
+            file.save(db_path)
             
             # Verify the uploaded database
-            conn = sqlite3.connect('fut_extinct_cards.db')
+            conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) FROM cards')
+            cursor.execute('SELECT COUNT(*) FROM extinct_players')
             card_count = cursor.fetchone()[0]
             conn.close()
             
@@ -267,7 +278,7 @@ def upload_db():
             <head><title>Upload Success</title></head>
             <body style="font-family: Arial; max-width: 600px; margin: 50px auto; padding: 20px;">
                 <h1>✅ Database Uploaded Successfully!</h1>
-                <p>Restored database with <strong>{card_count:,}</strong> cards.</p>
+                <p>Restored database with <strong>{card_count:,}</strong> extinct players.</p>
                 <p>The bot will now use this data for extinct monitoring.</p>
                 <a href="/">← Back to Dashboard</a>
             </body>
@@ -285,12 +296,14 @@ def status():
     try:
         # Check database
         try:
-            conn = sqlite3.connect('fut_extinct_cards.db')
+            db_path = get_db_path()
+            conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) FROM cards')
+            cursor.execute('SELECT COUNT(*) FROM extinct_players')
             card_count = cursor.fetchone()[0]
             conn.close()
-        except:
+        except Exception as e:
+            print(f"Database error in status check: {e}")
             card_count = 0
         
         # Check environment variables
