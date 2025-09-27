@@ -235,47 +235,76 @@ class FutGGExtinctMonitor:
         return discovered_count
 
     def store_extinct_player(self, name, rating, fut_gg_url):
-        """Store extinct player in database with additional info, return True if new"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Check if URL already exists
-            cursor.execute('SELECT id FROM extinct_players WHERE fut_gg_url = ?', (fut_gg_url,))
-            if cursor.fetchone():
-                conn.close()
-                return False  # Already exists
-            
-            # Get additional player info
-            additional_info = self.get_additional_player_info(fut_gg_url)
-            club_name = additional_info.get('club', self.extract_club_from_url(fut_gg_url))
-            position = additional_info.get('position', 'Unknown')
-            
-            # Insert new extinct player
-            cursor.execute('''
-                INSERT INTO extinct_players (name, rating, fut_gg_url, status, alert_sent)
-                VALUES (?, ?, ?, 'extinct', 1)
-            ''', (name, rating, fut_gg_url))
-            
-            conn.commit()
-            conn.close()
-            
-            print(f"🔥 NEW EXTINCTION: {name} ({rating}) - {club_name or 'Unknown Club'}")
-            
-            # Send immediate extinction alert with enhanced info
-            self.send_extinction_alert({
-                'name': name,
-                'rating': rating,
-                'fut_gg_url': fut_gg_url,
-                'club': club_name,
-                'position': position
-            })
-            
-            return True
-            
-        except Exception as e:
-            print(f"Error storing extinct player {name}: {e}")
-            return False
+        """Store extinct player in database with better error handling, return True if new"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)  # Add timeout
+                cursor = conn.cursor()
+                
+                # Check if URL already exists
+                cursor.execute('SELECT id FROM extinct_players WHERE fut_gg_url = ?', (fut_gg_url,))
+                if cursor.fetchone():
+                    conn.close()
+                    return False  # Already exists
+                
+                # Get additional player info (but don't let it slow down too much)
+                additional_info = {}
+                try:
+                    additional_info = self.get_additional_player_info(fut_gg_url)
+                except:
+                    pass  # Don't let info gathering break the storage
+                
+                club_name = additional_info.get('club', 'Unknown')
+                position = additional_info.get('position', 'Unknown')
+                
+                # Insert new extinct player
+                cursor.execute('''
+                    INSERT OR IGNORE INTO extinct_players (name, rating, fut_gg_url, status, alert_sent)
+                    VALUES (?, ?, ?, 'extinct', 1)
+                ''', (name, rating, fut_gg_url))
+                
+                # Check if the insert actually happened
+                if cursor.rowcount > 0:
+                    conn.commit()
+                    conn.close()
+                    
+                    print(f"🔥 NEW EXTINCTION: {name} ({rating}) - {club_name}")
+                    
+                    # Send immediate extinction alert with enhanced info
+                    self.send_extinction_alert({
+                        'name': name,
+                        'rating': rating,
+                        'fut_gg_url': fut_gg_url,
+                        'club': club_name,
+                        'position': position
+                    })
+                    
+                    return True
+                else:
+                    conn.close()
+                    return False  # Insert was ignored (duplicate)
+                
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    print(f"Database locked, retrying {attempt + 1}/{max_retries}...")
+                    time.sleep(random.uniform(0.5, 2.0))  # Random backoff
+                    continue
+                else:
+                    print(f"Database error storing extinct player {name}: {e}")
+                    return False
+            except sqlite3.IntegrityError as e:
+                if "UNIQUE constraint failed" in str(e):
+                    print(f"Player {name} already exists in database")
+                    return False
+                else:
+                    print(f"Integrity error storing extinct player {name}: {e}")
+                    return False
+            except Exception as e:
+                print(f"Error storing extinct player {name}: {e}")
+                return False
+        
+        return False
 
     def update_last_checked(self, player_id):
         """Update last_checked timestamp for player"""
@@ -329,25 +358,41 @@ class FutGGExtinctMonitor:
             return None  # Uncertain due to error
 
     def monitor_database_players(self):
-        """Monitor players in database for status changes"""
+        """Monitor players in database for status changes with better concurrency handling"""
         while True:
             try:
                 print("🔍 Checking database players for status changes...")
                 
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
+                # Get extinct players to check with better database handling
+                extinct_players = []
+                max_retries = 3
                 
-                # Get extinct players to check (sample for performance)
-                cursor.execute('''
-                    SELECT id, name, rating, fut_gg_url, status
-                    FROM extinct_players 
-                    WHERE status = 'extinct'
-                    ORDER BY RANDOM()
-                    LIMIT 25
-                ''')
-                
-                extinct_players = cursor.fetchall()
-                conn.close()
+                for attempt in range(max_retries):
+                    try:
+                        conn = sqlite3.connect(self.db_path, timeout=30.0)
+                        cursor = conn.cursor()
+                        
+                        cursor.execute('''
+                            SELECT id, name, rating, fut_gg_url, status
+                            FROM extinct_players 
+                            WHERE status = 'extinct'
+                            ORDER BY RANDOM()
+                            LIMIT 20
+                        ''')
+                        
+                        extinct_players = cursor.fetchall()
+                        conn.close()
+                        break
+                        
+                    except sqlite3.OperationalError as e:
+                        if "database is locked" in str(e) and attempt < max_retries - 1:
+                            print(f"Database locked during read, retrying {attempt + 1}/{max_retries}...")
+                            time.sleep(random.uniform(1, 3))
+                            continue
+                        else:
+                            print(f"Database error during monitoring: {e}")
+                            time.sleep(60)
+                            break
                 
                 if not extinct_players:
                     print("No extinct players to check in database")
@@ -365,17 +410,16 @@ class FutGGExtinctMonitor:
                     
                     if is_extinct is False and current_status == 'extinct':
                         # Player is back in market!
-                        self.update_player_status(player_id, 'available')
-                        
-                        # Send availability alert
-                        self.send_availability_alert({
-                            'name': name,
-                            'rating': rating,
-                            'fut_gg_url': fut_gg_url
-                        })
-                        
-                        status_changes += 1
-                        print(f"✅ BACK TO MARKET: {name}")
+                        if self.update_player_status(player_id, 'available'):
+                            # Send availability alert
+                            self.send_availability_alert({
+                                'name': name,
+                                'rating': rating,
+                                'fut_gg_url': fut_gg_url
+                            })
+                            
+                            status_changes += 1
+                            print(f"✅ BACK TO MARKET: {name}")
                         
                     elif is_extinct is True:
                         # Still extinct, just update last_checked
@@ -387,7 +431,7 @@ class FutGGExtinctMonitor:
                         print(f"❓ Uncertain status: {name}")
                     
                     # Delay between checks
-                    time.sleep(random.uniform(3, 5))
+                    time.sleep(random.uniform(4, 7))
                 
                 print(f"✅ Monitoring cycle complete: {status_changes} players back in market")
                 time.sleep(300)  # 5 minutes between cycles
