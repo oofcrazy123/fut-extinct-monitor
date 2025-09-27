@@ -164,7 +164,7 @@ class FutGGExtinctMonitor:
         print("🔍 Discovering extinct players...")
         discovered_count = 0
         page = 1
-        consecutive_empty_pages = 0
+        consecutive_no_new_players = 0
         
         while True:
             # Safety limit - don't go beyond 200 pages
@@ -191,20 +191,17 @@ class FutGGExtinctMonitor:
                 player_links = soup.find_all('a', href=lambda x: x and '/players/' in str(x))
                 
                 if not player_links:
-                    consecutive_empty_pages += 1
-                    print(f"Page {page}: No player links found (empty page {consecutive_empty_pages})")
+                    consecutive_no_new_players += 1
+                    print(f"Page {page}: No player links found (empty page)")
                     
-                    # If we hit 3 consecutive empty pages, we've reached the end
-                    if consecutive_empty_pages >= 3:
+                    # If we hit 3 consecutive truly empty pages, we've reached the end
+                    if consecutive_no_new_players >= 3:
                         print(f"Found 3 consecutive empty pages, stopping discovery at page {page}")
                         break
                     
                     page += 1
                     time.sleep(random.uniform(1, 2))
                     continue
-                
-                # Reset consecutive empty counter since we found players
-                consecutive_empty_pages = 0
                 
                 page_discovered = 0
                 
@@ -248,20 +245,21 @@ class FutGGExtinctMonitor:
                 
                 print(f"Page {page}: Discovered {page_discovered} new extinct players")
                 
-                # If we found no new players on this page, it might mean we've already tracked them all
+                # Track consecutive pages with no NEW discoveries
                 if page_discovered == 0:
-                    consecutive_empty_pages += 1
-                    if consecutive_empty_pages >= 5:
-                        print(f"Found 5 consecutive pages with no new players, likely reached end of new extinctions")
+                    consecutive_no_new_players += 1
+                    if consecutive_no_new_players >= 10:
+                        print(f"Found 10 consecutive pages with no new players, stopping discovery")
                         break
                 else:
-                    consecutive_empty_pages = 0
+                    consecutive_no_new_players = 0  # Reset only when we find new players
                 
                 page += 1
                 time.sleep(random.uniform(1, 2))
                 
             except Exception as e:
                 print(f"Error discovering extinct players on page {page}: {e}")
+                consecutive_no_new_players += 1
                 page += 1
                 time.sleep(random.uniform(2, 4))
                 continue
