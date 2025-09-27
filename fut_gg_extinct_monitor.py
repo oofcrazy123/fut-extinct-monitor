@@ -592,7 +592,7 @@ class FutGGExtinctMonitor:
             }
             
             # Add club info if available
-            if club_name and club_name != 'Unknown Club':
+            if club_name and club_name != 'Unknown Club' and club_name != 'Unknown':
                 embed["fields"].append({
                     "name": "Club",
                     "value": club_name,
@@ -620,9 +620,13 @@ class FutGGExtinctMonitor:
             payload = {"embeds": [embed]}
             
             try:
-                requests.post(Config.DISCORD_WEBHOOK_URL, json=payload)
+                response = requests.post(Config.DISCORD_WEBHOOK_URL, json=payload)
+                if response.status_code == 204:
+                    print("✅ Discord extinction alert sent")
+                else:
+                    print(f"❌ Discord error: {response.status_code} - {response.text}")
             except Exception as e:
-                print(f"Discord error: {e}")
+                print(f"❌ Discord error: {e}")
 
     def send_availability_alert(self, player_data):
         """Send alert for player back in market"""
