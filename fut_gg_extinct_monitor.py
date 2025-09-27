@@ -376,8 +376,8 @@ class FutGGExtinctMonitor:
                             SELECT id, name, rating, fut_gg_url, status
                             FROM extinct_players 
                             WHERE status = 'extinct'
-                            ORDER BY RANDOM()
-                            LIMIT 20
+                            ORDER BY last_checked ASC
+                            LIMIT 100
                         ''')
                         
                         extinct_players = cursor.fetchall()
