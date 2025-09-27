@@ -64,41 +64,25 @@ class FutGGExtinctMonitor:
         })
     
     def init_database(self):
-        """Initialize SQLite database for extinct card monitoring"""
+        """Initialize SQLite database for tracking extinct players"""
         print(f"🔧 Initializing database at: {self.db_path}")
         
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # Main table for tracking extinct players
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS cards (
+                CREATE TABLE IF NOT EXISTS extinct_players (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     rating INTEGER,
-                    position TEXT,
-                    club TEXT,
-                    nation TEXT,
-                    league TEXT,
-                    card_type TEXT,
-                    fut_gg_url TEXT UNIQUE,
-                    fut_gg_id TEXT,
-                    extinction_status TEXT DEFAULT 'unknown',
-                    last_check TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS extinct_alerts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    card_id INTEGER,
-                    platform TEXT,
-                    extinct_status BOOLEAN DEFAULT 1,
-                    alert_sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    resolved_at TIMESTAMP NULL,
-                    FOREIGN KEY (card_id) REFERENCES cards (id)
+                    fut_gg_url TEXT UNIQUE NOT NULL,
+                    status TEXT DEFAULT 'extinct',
+                    first_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    status_changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    alert_sent BOOLEAN DEFAULT 0
                 )
             ''')
             
@@ -110,28 +94,16 @@ class FutGGExtinctMonitor:
                 )
             ''')
             
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS card_status_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    card_id INTEGER,
-                    status_type TEXT,
-                    status_value TEXT,
-                    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (card_id) REFERENCES cards (id)
-                )
-            ''')
-            
             # Add indexes for better performance
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_extinction_status ON cards(extinction_status)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_checked ON cards(last_checked)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_name ON cards(name)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON cards(created_at)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_url ON extinct_players(fut_gg_url)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_status ON extinct_players(status)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_checked ON extinct_players(last_checked)')
             
             conn.commit()
             
-            cursor.execute('SELECT COUNT(*) FROM cards')
-            existing_cards = cursor.fetchone()[0]
-            print(f"📊 Database initialized! Existing cards: {existing_cards}")
+            cursor.execute('SELECT COUNT(*) FROM extinct_players')
+            existing_players = cursor.fetchone()[0]
+            print(f"📊 Database initialized! Existing tracked players: {existing_players}")
             
             conn.close()
             print("✅ Database initialization successful!")
@@ -165,7 +137,7 @@ class FutGGExtinctMonitor:
             
             self.send_notification_to_all(
                 f"🤖 FUT.GG Extinct Monitor Started!\n"
-                f"🎯 Using URL-based tracking for precise detection\n"
+                f"🎯 Using database-driven tracking\n"
                 f"⚡ Running on cloud infrastructure\n"
                 f"⏰ Check interval: 5 minutes\n"
                 f"🔒 Instance: {instance_id[:12]}",
@@ -187,11 +159,10 @@ class FutGGExtinctMonitor:
             except:
                 pass
 
-    def scrape_extinct_players_with_urls(self, max_pages=50):
-        """
-        Scrape extinct players and capture their specific fut.gg URLs
-        """
-        extinct_players = []
+    def discover_extinct_players(self, max_pages=20):
+        """Discover extinct players and store them in database"""
+        print("🔍 Discovering extinct players...")
+        discovered_count = 0
         
         for page in range(1, max_pages + 1):
             url = f"https://www.fut.gg/players/?page={page}&price__lte=0"
@@ -207,15 +178,13 @@ class FutGGExtinctMonitor:
                 response.raise_for_status()
                 
                 soup = BeautifulSoup(response.content, 'html.parser')
-                
-                # Find all player links on the page
                 player_links = soup.find_all('a', href=lambda x: x and '/players/' in str(x))
                 
                 if not player_links:
-                    print(f"No more extinct players found at page {page}, stopping")
+                    print(f"No more extinct players found at page {page}, stopping discovery")
                     break
                 
-                print(f"Page {page}: Found {len(player_links)} player links")
+                page_discovered = 0
                 
                 for link in player_links:
                     try:
@@ -232,7 +201,6 @@ class FutGGExtinctMonitor:
                         # Find player image to get name and rating
                         img = link.find('img', alt=lambda x: x and ' - ' in str(x))
                         if not img:
-                            # Try to find img in the parent container
                             container = link.find_parent(['div', 'article', 'section'])
                             if container:
                                 img = container.find('img', alt=lambda x: x and ' - ' in str(x))
@@ -248,26 +216,84 @@ class FutGGExtinctMonitor:
                                 except ValueError:
                                     continue
                                 
-                                card_data = {
-                                    'name': player_name,
-                                    'rating': rating,
-                                    'fut_gg_url': fut_gg_url,
-                                    'appears_extinct': True  # All players on this URL are extinct
-                                }
-                                
-                                extinct_players.append(card_data)
+                                # Store in database if not already tracked
+                                if self.store_extinct_player(player_name, rating, fut_gg_url):
+                                    discovered_count += 1
+                                    page_discovered += 1
                     
                     except Exception as e:
                         continue
                 
+                print(f"Page {page}: Discovered {page_discovered} new extinct players")
                 time.sleep(random.uniform(1, 2))
                 
             except Exception as e:
-                print(f"Error scraping extinct page {page}: {e}")
+                print(f"Error discovering extinct players on page {page}: {e}")
                 break
         
-        print(f"Found {len(extinct_players)} total extinct players with URLs")
-        return extinct_players
+        print(f"🎯 Discovery complete! Found {discovered_count} new extinct players")
+        return discovered_count
+
+    def store_extinct_player(self, name, rating, fut_gg_url):
+        """Store extinct player in database with additional info, return True if new"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if URL already exists
+            cursor.execute('SELECT id FROM extinct_players WHERE fut_gg_url = ?', (fut_gg_url,))
+            if cursor.fetchone():
+                conn.close()
+                return False  # Already exists
+            
+            # Get additional player info
+            additional_info = self.get_additional_player_info(fut_gg_url)
+            club_name = additional_info.get('club', self.extract_club_from_url(fut_gg_url))
+            position = additional_info.get('position', 'Unknown')
+            
+            # Insert new extinct player
+            cursor.execute('''
+                INSERT INTO extinct_players (name, rating, fut_gg_url, status, alert_sent)
+                VALUES (?, ?, ?, 'extinct', 1)
+            ''', (name, rating, fut_gg_url))
+            
+            conn.commit()
+            conn.close()
+            
+            print(f"🔥 NEW EXTINCTION: {name} ({rating}) - {club_name or 'Unknown Club'}")
+            
+            # Send immediate extinction alert with enhanced info
+            self.send_extinction_alert({
+                'name': name,
+                'rating': rating,
+                'fut_gg_url': fut_gg_url,
+                'club': club_name,
+                'position': position
+            })
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error storing extinct player {name}: {e}")
+            return False
+
+    def update_last_checked(self, player_id):
+        """Update last_checked timestamp for player"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                UPDATE extinct_players 
+                SET last_checked = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (player_id,))
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            print(f"Error updating last_checked: {e}")
 
     def check_url_extinction_status(self, fut_gg_url):
         """Check if a specific player URL still shows EXTINCT"""
@@ -283,7 +309,7 @@ class FutGGExtinctMonitor:
             
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # Look for extinct indicators in the specific class
+            # Look for extinct indicators
             extinct_elements = soup.find_all(class_="flex items-center justify-center grow shrink-0 gap-[0.1em]")
             
             for element in extinct_elements:
@@ -291,7 +317,7 @@ class FutGGExtinctMonitor:
                 if "EXTINCT" in text:
                     return True
             
-            # Also check for any element containing "EXTINCT" as backup
+            # Backup check
             page_text = soup.get_text().upper()
             if "EXTINCT" in page_text:
                 return True
@@ -302,268 +328,275 @@ class FutGGExtinctMonitor:
             print(f"Error checking URL {fut_gg_url}: {e}")
             return None  # Uncertain due to error
 
-    def monitor_extinct_players_by_url(self):
-        """Monitor specific player URLs for extinction status changes"""
-        tracked_urls = {}  # Format: {fut_gg_url: {'name': name, 'rating': rating, 'status': 'extinct'/'available'}}
-        cycle_count = 0
-        
+    def monitor_database_players(self):
+        """Monitor players in database for status changes"""
         while True:
             try:
-                cycle_count += 1
-                print(f"Starting URL-based monitoring cycle #{cycle_count}...")
+                print("🔍 Checking database players for status changes...")
                 
-                # Step 1: Discover new extinct players and their URLs
-                print("📡 Discovering new extinct players...")
-                current_extinct = self.scrape_extinct_players_with_urls(max_pages=10)
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
                 
-                newly_extinct = []
-                for player in current_extinct:
-                    url = player['fut_gg_url']
-                    if url not in tracked_urls:
-                        newly_extinct.append(player)
-                        tracked_urls[url] = {
-                            'name': player['name'],
-                            'rating': player['rating'],
-                            'status': 'extinct'
-                        }
-                        print(f"🔥 NEW EXTINCTION: {player['name']} ({player['rating']})")
+                # Get extinct players to check (sample for performance)
+                cursor.execute('''
+                    SELECT id, name, rating, fut_gg_url, status
+                    FROM extinct_players 
+                    WHERE status = 'extinct'
+                    ORDER BY RANDOM()
+                    LIMIT 25
+                ''')
                 
-                # Step 2: Check sample of previously extinct URLs
-                extinct_urls = [url for url, data in tracked_urls.items() if data['status'] == 'extinct']
-                no_longer_extinct = []
+                extinct_players = cursor.fetchall()
+                conn.close()
                 
-                if extinct_urls:
-                    # Sample up to 20 URLs to check per cycle
-                    sample_size = min(20, len(extinct_urls))
-                    sample_urls = random.sample(extinct_urls, sample_size)
+                if not extinct_players:
+                    print("No extinct players to check in database")
+                    time.sleep(300)
+                    continue
+                
+                print(f"Checking {len(extinct_players)} extinct players...")
+                
+                status_changes = 0
+                
+                for player_id, name, rating, fut_gg_url, current_status in extinct_players:
+                    print(f"Checking {name} ({rating})...")
                     
-                    print(f"🔍 Checking {len(sample_urls)} previously extinct URLs...")
+                    is_extinct = self.check_url_extinction_status(fut_gg_url)
                     
-                    for url in sample_urls:
-                        player_data = tracked_urls[url]
-                        print(f"Checking {player_data['name']} ({player_data['rating']})...")
+                    if is_extinct is False and current_status == 'extinct':
+                        # Player is back in market!
+                        self.update_player_status(player_id, 'available')
                         
-                        is_extinct = self.check_url_extinction_status(url)
+                        # Send availability alert
+                        self.send_availability_alert({
+                            'name': name,
+                            'rating': rating,
+                            'fut_gg_url': fut_gg_url
+                        })
                         
-                        if is_extinct is False:  # Explicitly not extinct
-                            no_longer_extinct.append({
-                                'name': player_data['name'],
-                                'rating': player_data['rating'],
-                                'fut_gg_url': url
-                            })
-                            tracked_urls[url]['status'] = 'available'
-                            print(f"✅ BACK TO MARKET: {player_data['name']}")
-                        elif is_extinct is True:
-                            print(f"🔥 Still extinct: {player_data['name']}")
-                        else:
-                            print(f"❓ Uncertain status: {player_data['name']}")
+                        status_changes += 1
+                        print(f"✅ BACK TO MARKET: {name}")
                         
-                        # Delay between URL checks
-                        time.sleep(random.uniform(3, 5))
+                    elif is_extinct is True:
+                        # Still extinct, just update last_checked
+                        self.update_last_checked(player_id)
+                        print(f"🔥 Still extinct: {name}")
+                        
+                    else:
+                        # Uncertain status
+                        print(f"❓ Uncertain status: {name}")
+                    
+                    # Delay between checks
+                    time.sleep(random.uniform(3, 5))
                 
-                # Step 3: Send alerts for changes
-                if newly_extinct:
-                    self.send_extinction_alerts(newly_extinct)
-                
-                if no_longer_extinct:
-                    self.send_availability_alerts(no_longer_extinct)
-                
-                # Cycle summary
-                total_tracked = len(tracked_urls)
-                extinct_count = sum(1 for data in tracked_urls.values() if data['status'] == 'extinct')
-                available_count = total_tracked - extinct_count
-                
-                print(f"✅ Cycle #{cycle_count} complete:")
-                print(f"   🔥 New extinctions: {len(newly_extinct)}")
-                print(f"   ✅ Back to market: {len(no_longer_extinct)}")
-                print(f"   📊 Total tracked URLs: {total_tracked} ({extinct_count} extinct, {available_count} available)")
-                
-                time.sleep(300)  # 5 minute intervals
+                print(f"✅ Monitoring cycle complete: {status_changes} players back in market")
+                time.sleep(300)  # 5 minutes between cycles
                 
             except Exception as e:
-                print(f"Monitoring error: {e}")
+                print(f"Error in monitoring cycle: {e}")
                 time.sleep(60)
 
-    def send_extinction_alerts(self, newly_extinct_cards):
-        """Send individual clean alerts for each newly extinct player"""
-        if not newly_extinct_cards:
-            return
-        
-        print(f"Sending individual alerts for {len(newly_extinct_cards)} extinct players...")
-        
-        # Send individual notification for each extinct player
-        for card in newly_extinct_cards:
-            # Clean format: just name and rating
-            message = f"EXTINCT: {card.get('name', 'Unknown')} ({card.get('rating', '?')})"
+    def update_player_status(self, player_id, new_status):
+        """Update player status in database"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
             
-            # Send to Telegram
-            self.send_telegram_notification(message)
+            cursor.execute('''
+                UPDATE extinct_players 
+                SET status = ?, status_changed_at = CURRENT_TIMESTAMP, last_checked = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (new_status, player_id))
             
-            # Send to Discord  
-            if Config.DISCORD_WEBHOOK_URL:
-                embed = {
-                    "title": "Player Extinct",
-                    "description": f"{card.get('name', 'Unknown')} - Rating {card.get('rating', '?')}",
-                    "color": 0xff0000,
-                    "timestamp": datetime.now().isoformat(),
-                    "fields": [
-                        {
-                            "name": "Status",
-                            "value": "EXTINCT",
-                            "inline": True
-                        },
-                        {
-                            "name": "Rating", 
-                            "value": str(card.get('rating', '?')),
-                            "inline": True
-                        }
-                    ]
-                }
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            print(f"Error updating player status: {e}")
+
+    def extract_club_from_url(self, fut_gg_url):
+        """Extract club name from fut.gg URL"""
+        try:
+            if not fut_gg_url or '/players/' not in fut_gg_url:
+                return None
+            
+            # URLs often contain club info like /players/123-messi-barcelona/
+            url_parts = fut_gg_url.split('/players/')
+            if len(url_parts) > 1:
+                player_part = url_parts[1].split('/')[0]  # Get the part after /players/
                 
-                # Add URL if available
-                if card.get('fut_gg_url'):
-                    embed["url"] = card.get('fut_gg_url')
-                
-                payload = {"embeds": [embed]}
-                
-                try:
-                    response = requests.post(Config.DISCORD_WEBHOOK_URL, json=payload)
-                    if response.status_code == 204:
-                        print(f"Individual Discord alert sent for {card.get('name')}")
-                    else:
-                        print(f"Discord error for {card.get('name')}: {response.status_code}")
-                except Exception as e:
-                    print(f"Discord error for {card.get('name')}: {e}")
+                # Extract potential club name from URL slug
+                if '-' in player_part:
+                    parts = player_part.split('-')
+                    if len(parts) > 2:  # Usually format: id-playername-club
+                        club_part = '-'.join(parts[2:])  # Everything after playername
+                        club_name = club_part.replace('-', ' ').title()
+                        return club_name
             
-            # Small delay between individual notifications to avoid spam
-            time.sleep(2)
-        
-        # Send a clean summary if multiple players went extinct
-        if len(newly_extinct_cards) > 1:
-            summary = f"Summary: {len(newly_extinct_cards)} players went extinct"
-            self.send_telegram_notification(summary)
+            return None
+        except Exception as e:
+            return None
+
+    def get_additional_player_info(self, fut_gg_url):
+        """Get additional player info by checking the player page"""
+        try:
+            headers = {
+                'User-Agent': random.choice(self.user_agents),
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+            }
             
-            if Config.DISCORD_WEBHOOK_URL:
-                summary_embed = {
-                    "title": "Extinction Summary",
-                    "description": f"{len(newly_extinct_cards)} players went extinct",
-                    "color": 0xff6600,
-                    "timestamp": datetime.now().isoformat()
-                }
-                summary_payload = {"embeds": [summary_embed]}
-                
-                try:
-                    requests.post(Config.DISCORD_WEBHOOK_URL, json=summary_payload)
-                except Exception as e:
-                    print(f"Discord summary error: {e}")
-        
-        print(f"Completed sending {len(newly_extinct_cards)} individual extinction alerts")
-    
-    def send_availability_alerts(self, no_longer_extinct_cards):
-        """Send enhanced alerts for players no longer extinct"""
-        if not no_longer_extinct_cards:
-            return
-        
-        # Send individual Discord embeds for each player back in market
-        for card in no_longer_extinct_cards:
-            # Enhanced Telegram message
-            telegram_message = f"✅ BACK IN MARKET: {card.get('name', 'Unknown')} ({card.get('rating', '?')})"
-            self.send_telegram_notification(telegram_message)
+            response = requests.get(fut_gg_url, headers=headers, timeout=15)
+            response.raise_for_status()
             
-            # Enhanced Discord embed for each player
-            if Config.DISCORD_WEBHOOK_URL:
-                embed = {
-                    "title": f"✅ {card.get('name', 'Unknown')} Back in Market!",
-                    "description": f"This player is now available for purchase again",
-                    "color": 0x00ff00,  # Green color for positive news
-                    "timestamp": datetime.now().isoformat(),
-                    "fields": [
-                        {
-                            "name": "🔄 Status",
-                            "value": "Available",
-                            "inline": True
-                        },
-                        {
-                            "name": "⭐ Rating",
-                            "value": str(card.get('rating', '?')),
-                            "inline": True
-                        },
-                        {
-                            "name": "💰 Action",
-                            "value": "Ready to buy!",
-                            "inline": True
-                        }
-                    ],
-                    "footer": {
-                        "text": "FUT.GG Extinct Monitor",
-                        "icon_url": "https://www.fut.gg/favicon.ico"
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            info = {}
+            
+            # Try to find club information
+            club_links = soup.find_all('a', href=lambda x: x and '/clubs/' in str(x))
+            if club_links:
+                club_link = club_links[0]
+                href = club_link.get('href', '')
+                if '/clubs/' in href:
+                    # Extract club name from URL like /clubs/73-paris-sg/
+                    club_part = href.split('/clubs/')[-1].rstrip('/')
+                    if '-' in club_part:
+                        club_name = club_part.split('-', 1)[1].replace('-', ' ').title()
+                        info['club'] = club_name
+            
+            # Try to find position
+            position_text = soup.get_text()
+            positions = ['ST', 'CF', 'LW', 'RW', 'CAM', 'CM', 'CDM', 'LB', 'RB', 'CB', 'GK']
+            for pos in positions:
+                if pos in position_text:
+                    info['position'] = pos
+                    break
+            
+            return info
+            
+        except Exception as e:
+            return {}
+        """Update last_checked timestamp for player"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                UPDATE extinct_players 
+                SET last_checked = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (player_id,))
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            print(f"Error updating last_checked: {e}")
+
+    def send_extinction_alert(self, player_data):
+        """Send alert for newly extinct player"""
+        club_name = player_data.get('club', 'Unknown Club')
+        position = player_data.get('position', 'Unknown')
+        
+        message = f"EXTINCT: {player_data.get('name', 'Unknown')} ({player_data.get('rating', '?')}) - {club_name}"
+        self.send_telegram_notification(message)
+        
+        if Config.DISCORD_WEBHOOK_URL:
+            embed = {
+                "title": f"{player_data.get('name', 'Unknown')} - EXTINCT",
+                "color": 0xff0000,
+                "timestamp": datetime.now().isoformat(),
+                "fields": [
+                    {
+                        "name": "Rating",
+                        "value": str(player_data.get('rating', '?')),
+                        "inline": True
                     }
-                }
-                
-                # Add player URL if available
-                if card.get('fut_gg_url'):
-                    embed["url"] = card.get('fut_gg_url')
-                    embed["fields"].append({
-                        "name": "🔗 Link",
-                        "value": f"[View on FUT.GG]({card.get('fut_gg_url')})",
-                        "inline": False
-                    })
-                
-                payload = {"embeds": [embed]}
-                
-                try:
-                    response = requests.post(Config.DISCORD_WEBHOOK_URL, json=payload)
-                    if response.status_code == 204:
-                        print(f"Individual Discord availability alert sent for {card.get('name')}")
-                    else:
-                        print(f"Discord error for {card.get('name')}: {response.status_code}")
-                except Exception as e:
-                    print(f"Discord error for {card.get('name')}: {e}")
+                ]
+            }
             
-            # Small delay between notifications
-            time.sleep(2)
+            # Add club info if available
+            if club_name and club_name != 'Unknown Club':
+                embed["fields"].append({
+                    "name": "Club",
+                    "value": club_name,
+                    "inline": True
+                })
+            
+            # Add position if available
+            if position and position != 'Unknown':
+                embed["fields"].append({
+                    "name": "Position",
+                    "value": position,
+                    "inline": True
+                })
+            
+            # Add status field
+            embed["fields"].append({
+                "name": "Status",
+                "value": "EXTINCT",
+                "inline": True
+            })
+            
+            if player_data.get('fut_gg_url'):
+                embed["url"] = player_data.get('fut_gg_url')
+            
+            payload = {"embeds": [embed]}
+            
+            try:
+                requests.post(Config.DISCORD_WEBHOOK_URL, json=payload)
+            except Exception as e:
+                print(f"Discord error: {e}")
+
+    def send_availability_alert(self, player_data):
+        """Send alert for player back in market"""
+        telegram_message = f"✅ BACK IN MARKET: {player_data.get('name', 'Unknown')} ({player_data.get('rating', '?')})"
+        self.send_telegram_notification(telegram_message)
         
-        # Send summary if multiple players became available
-        if len(no_longer_extinct_cards) > 1:
-            summary_message = f"✅ SUMMARY: {len(no_longer_extinct_cards)} players are back in market!"
-            self.send_telegram_notification(summary_message)
-            
-            if Config.DISCORD_WEBHOOK_URL:
-                # Create a summary embed with all players
-                player_list = []
-                for card in no_longer_extinct_cards[:10]:  # Limit to 10 in summary
-                    player_list.append(f"✅ **{card.get('name', 'Unknown')}** ({card.get('rating', '?')})")
-                
-                if len(no_longer_extinct_cards) > 10:
-                    player_list.append(f"... and {len(no_longer_extinct_cards) - 10} more!")
-                
-                summary_embed = {
-                    "title": f"🎉 {len(no_longer_extinct_cards)} Players Back in Market!",
-                    "description": "\n".join(player_list),
-                    "color": 0x00ff88,  # Bright green
-                    "timestamp": datetime.now().isoformat(),
-                    "fields": [
-                        {
-                            "name": "💡 Tip",
-                            "value": "These players were previously extinct and are now available for purchase!",
-                            "inline": False
-                        }
-                    ],
-                    "footer": {
-                        "text": "FUT.GG Extinct Monitor - Market Update",
-                        "icon_url": "https://www.fut.gg/favicon.ico"
+        if Config.DISCORD_WEBHOOK_URL:
+            embed = {
+                "title": f"✅ {player_data.get('name', 'Unknown')} Back in Market!",
+                "description": f"This player is now available for purchase again",
+                "color": 0x00ff00,
+                "timestamp": datetime.now().isoformat(),
+                "fields": [
+                    {
+                        "name": "🔄 Status",
+                        "value": "Available",
+                        "inline": True
+                    },
+                    {
+                        "name": "⭐ Rating",
+                        "value": str(player_data.get('rating', '?')),
+                        "inline": True
+                    },
+                    {
+                        "name": "💰 Action",
+                        "value": "Ready to buy!",
+                        "inline": True
                     }
+                ],
+                "footer": {
+                    "text": "FUT.GG Extinct Monitor",
+                    "icon_url": "https://www.fut.gg/favicon.ico"
                 }
-                
-                summary_payload = {"embeds": [summary_embed]}
-                
-                try:
-                    requests.post(Config.DISCORD_WEBHOOK_URL, json=summary_payload)
-                    print(f"Discord summary sent for {len(no_longer_extinct_cards)} available players")
-                except Exception as e:
-                    print(f"Discord summary error: {e}")
-        
-        print(f"Completed sending availability alerts for {len(no_longer_extinct_cards)} players")
+            }
+            
+            if player_data.get('fut_gg_url'):
+                embed["url"] = player_data.get('fut_gg_url')
+                embed["fields"].append({
+                    "name": "🔗 Link",
+                    "value": f"[View on FUT.GG]({player_data.get('fut_gg_url')})",
+                    "inline": False
+                })
+            
+            payload = {"embeds": [embed]}
+            
+            try:
+                requests.post(Config.DISCORD_WEBHOOK_URL, json=payload)
+            except Exception as e:
+                print(f"Discord error: {e}")
 
     def send_telegram_notification(self, message):
         """Send notification to Telegram"""
@@ -610,35 +643,40 @@ class FutGGExtinctMonitor:
         """Send notification to both platforms"""
         self.send_telegram_notification(message)
         self.send_discord_notification(message, title)
+
+    def run_discovery_and_monitoring(self):
+        """Run discovery in separate thread, then start monitoring"""
+        def discovery_thread():
+            while True:
+                try:
+                    discovered = self.discover_extinct_players(max_pages=15)
+                    print(f"Discovery thread: Found {discovered} new extinct players")
+                    time.sleep(1800)  # Run discovery every 30 minutes
+                except Exception as e:
+                    print(f"Discovery thread error: {e}")
+                    time.sleep(300)
+        
+        # Start discovery thread
+        discovery = threading.Thread(target=discovery_thread, daemon=True)
+        discovery.start()
+        print("🔍 Discovery thread started")
+        
+        # Run initial discovery
+        self.discover_extinct_players(max_pages=20)
+        
+        # Start monitoring loop
+        self.monitor_database_players()
     
     def run_complete_system(self):
-        """Run the complete extinct monitoring system using URL-based tracking"""
-        print("🚀 Starting FUT.GG Extinct Player Monitor with URL-based tracking!")
-        print("🐛 DEBUG: run_complete_system called")
+        """Run the complete extinct monitoring system"""
+        print("🚀 Starting FUT.GG Extinct Player Monitor with Database tracking!")
         sys.stdout.flush()
         
         # Send startup notification
-        print("🐛 DEBUG: About to send startup notification")
-        sys.stdout.flush()
         self.check_and_send_startup_notification()
-        print("🐛 DEBUG: Startup notification sent")
-        sys.stdout.flush()
         
-        # Start the URL-based monitoring
-        print("🔥 Starting URL-based extinct monitoring...")
-        sys.stdout.flush()
-        try:
-            print("🐛 DEBUG: About to call monitor_extinct_players_by_url()")
-            sys.stdout.flush()
-            self.monitor_extinct_players_by_url()
-            print("🐛 DEBUG: monitor_extinct_players_by_url() returned")
-            sys.stdout.flush()
-        except Exception as e:
-            print(f"⚠️ Error in monitoring: {e}")
-            sys.stdout.flush()
-            import traceback
-            traceback.print_exc()
-            sys.stdout.flush()
+        # Start discovery and monitoring
+        self.run_discovery_and_monitoring()
 
 # Entry point
 if __name__ == "__main__":
