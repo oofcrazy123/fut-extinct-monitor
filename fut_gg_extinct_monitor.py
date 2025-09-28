@@ -246,9 +246,16 @@ class FutGGExtinctMonitor:
                                 club_hint = "Unknown"
                                 try:
                                     # Try to get club from nearby elements or URL patterns
-                                    club_container = link.find_parent(['div', 'article']).find('img', alt=lambda x: x and any(club in str(x).lower() for club in ['psg', 'milan', 'madrid', 'barcelona', 'liverpool', 'city', 'united', 'arsenal', 'chelsea', 'tottenham']) if x)
-                                    if club_container and club_container != img:
-                                        club_hint = club_container.get('alt', 'Unknown')
+                                    parent = link.find_parent(['div', 'article'])
+                                    if parent:
+                                        club_imgs = parent.find_all('img')
+                                        for club_img in club_imgs:
+                                            if club_img != img and club_img.get('alt'):
+                                                alt_text = str(club_img.get('alt', '')).lower()
+                                                club_keywords = ['psg', 'milan', 'madrid', 'barcelona', 'liverpool', 'city', 'united', 'arsenal', 'chelsea', 'tottenham']
+                                                if any(club in alt_text for club in club_keywords):
+                                                    club_hint = club_img.get('alt', 'Unknown')
+                                                    break
                                 except:
                                     pass
                                 
