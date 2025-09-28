@@ -54,6 +54,7 @@ class FutGGExtinctMonitor:
         ]
         self.init_database()
         self.startup_sent = False
+        self.last_hourly_summary = datetime.now() - timedelta(hours=1)  # Allow immediate first summary
     
     def rotate_user_agent(self):
         """Rotate user agent to avoid detection"""
@@ -137,6 +138,8 @@ class FutGGExtinctMonitor:
             self.send_notification_to_all(
                 f"🤖 FUT.GG Extinct Monitor Started!\n"
                 f"🎯 Using smart prioritization & market analysis\n"
+                f"⭐ Monitoring 81+ rated players only\n"
+                f"📊 Hourly extinct summaries enabled\n"
                 f"⚡ Running on cloud infrastructure\n"
                 f"⏰ Check interval: 3 minutes\n"
                 f"🔒 Instance: {instance_id[:12]}",
@@ -159,8 +162,8 @@ class FutGGExtinctMonitor:
                 pass
 
     def discover_extinct_players(self, max_pages=None):
-        """Discover extinct players and store them in database"""
-        print("🔍 Discovering extinct players...")
+        """Discover extinct players and store them in database - Only 81+ rated players"""
+        print("🔍 Discovering extinct players (81+ rating only)...")
         discovered_count = 0
         page = 1
         consecutive_no_new_players = 0
@@ -173,7 +176,8 @@ class FutGGExtinctMonitor:
                 print("Reached safety limit of 200 pages, stopping discovery")
                 break
                 
-            url = f"https://www.fut.gg/players/?page={page}&price__lte=0"
+            # Use the filtered URL for 81+ rating only
+            url = f"https://www.fut.gg/players/?page={page}&price__lte=0&overall__gte=81"
             
             try:
                 headers = {
@@ -227,6 +231,9 @@ class FutGGExtinctMonitor:
                                 player_name = parts[0].strip()
                                 try:
                                     rating = int(parts[1].strip())
+                                    # Only process 81+ rated players
+                                    if rating < 81:
+                                        continue
                                 except ValueError:
                                     continue
                                 
@@ -237,7 +244,7 @@ class FutGGExtinctMonitor:
                     except Exception as e:
                         continue
                 
-                print(f"Page {page}: Discovered {page_discovered} new extinct players")
+                print(f"Page {page}: Discovered {page_discovered} new extinct players (81+ only)")
                 
                 if page_discovered == 0:
                     consecutive_no_new_players += 1
@@ -257,7 +264,7 @@ class FutGGExtinctMonitor:
                 time.sleep(random.uniform(2, 4))
                 continue
         
-        print(f"🎯 Discovery complete! Found {discovered_count} new extinct players across {page-1} pages")
+        print(f"🎯 Discovery complete! Found {discovered_count} new extinct players (81+) across {page-1} pages")
         return discovered_count
 
     def get_additional_player_info(self, fut_gg_url):
@@ -333,6 +340,10 @@ class FutGGExtinctMonitor:
                 cursor.execute('SELECT id FROM extinct_players WHERE fut_gg_url = ?', (fut_gg_url,))
                 if cursor.fetchone():
                     conn.close()
+                    return False
+                
+                if rating < 81:
+                    print(f"⏭️ Skipping {name} ({rating}) - Below 81 rating threshold")
                     return False
                 
                 additional_info = {}
@@ -434,12 +445,12 @@ class FutGGExtinctMonitor:
             try:
                 print("🔍 Checking filtered URL with conservative monitoring...")
                 
-                # Get all currently extinct player URLs from filtered pages
+                # Get all currently extinct player URLs from filtered pages (81+ only)
                 current_extinct_urls = set()
                 
                 for page in range(1, 50):  # Increased scope to reduce false positives
                     try:
-                        url = f"https://www.fut.gg/players/?page={page}&price__lte=0"
+                        url = f"https://www.fut.gg/players/?page={page}&price__lte=0&overall__gte=81"
                         headers = {
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -545,6 +556,9 @@ class FutGGExtinctMonitor:
                 still_extinct = len(eligible_players) - len(confirmed_back_in_market)
                 print(f"✅ Conservative monitoring complete: {len(confirmed_back_in_market)} confirmed back in market, {still_extinct} still extinct")
                 
+                # Check if it's time to send hourly summary
+                self.check_and_send_hourly_summary()
+                
                 time.sleep(600)  # 10 minutes between cycles (longer to be more conservative)
                 
             except Exception as e:
@@ -579,6 +593,84 @@ class FutGGExtinctMonitor:
         
         return False
 
+    def check_and_send_hourly_summary(self):
+        """Send hourly summary of all extinct cards in database"""
+        now = datetime.now()
+        
+        # Check if an hour has passed since last summary
+        if now - self.last_hourly_summary >= timedelta(hours=1):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                
+                # Get all extinct players, ordered by rating descending
+                cursor.execute('''
+                    SELECT name, rating, fut_gg_url
+                    FROM extinct_players 
+                    WHERE status = 'extinct'
+                    ORDER BY rating DESC, name ASC
+                ''')
+                
+                extinct_players = cursor.fetchall()
+                conn.close()
+                
+                if extinct_players:
+                    # Format the summary message
+                    summary_lines = [f"📊 **HOURLY EXTINCT SUMMARY** ({len(extinct_players)} cards)\n"]
+                    
+                    # Group by rating for better readability
+                    current_rating = None
+                    for name, rating, url in extinct_players:
+                        if current_rating != rating:
+                            if current_rating is not None:
+                                summary_lines.append("")  # Add spacing between rating groups
+                            summary_lines.append(f"⭐ **{rating} Rating:**")
+                            current_rating = rating
+                        
+                        summary_lines.append(f"🔥 {name}")
+                    
+                    # Split into chunks if message is too long (Telegram has 4096 char limit)
+                    full_message = "\n".join(summary_lines)
+                    
+                    if len(full_message) <= 4000:  # Safe margin
+                        self.send_notification_to_all(full_message, "📊 Hourly Extinct Summary")
+                    else:
+                        # Split into multiple messages
+                        chunks = []
+                        current_chunk = [f"📊 **HOURLY EXTINCT SUMMARY** ({len(extinct_players)} cards) - Part 1\n"]
+                        current_length = len(current_chunk[0])
+                        part_num = 1
+                        
+                        for line in summary_lines[1:]:  # Skip the header we already added
+                            if current_length + len(line) + 1 > 3500:  # Safe margin for next part
+                                chunks.append("\n".join(current_chunk))
+                                part_num += 1
+                                current_chunk = [f"📊 **HOURLY EXTINCT SUMMARY** - Part {part_num}\n", line]
+                                current_length = len(current_chunk[0]) + len(line) + 1
+                            else:
+                                current_chunk.append(line)
+                                current_length += len(line) + 1
+                        
+                        # Add the last chunk
+                        chunks.append("\n".join(current_chunk))
+                        
+                        # Send all chunks
+                        for i, chunk in enumerate(chunks):
+                            self.send_notification_to_all(chunk, f"📊 Hourly Summary ({i+1}/{len(chunks)})")
+                            if i < len(chunks) - 1:  # Don't sleep after last message
+                                time.sleep(2)  # Small delay between parts
+                    
+                    print(f"✅ Hourly summary sent: {len(extinct_players)} extinct cards")
+                else:
+                    summary_message = "📊 **HOURLY EXTINCT SUMMARY**\n\n🎉 No extinct cards currently tracked!"
+                    self.send_notification_to_all(summary_message, "📊 Hourly Extinct Summary")
+                    print("✅ Hourly summary sent: No extinct cards")
+                
+                self.last_hourly_summary = now
+                
+            except Exception as e:
+                print(f"❌ Error sending hourly summary: {e}")
+
     def update_last_checked(self, player_id):
         """Update last_checked timestamp for player with retry logic"""
         max_retries = 3
@@ -612,11 +704,18 @@ class FutGGExtinctMonitor:
         return False
 
     def send_extinction_alert(self, player_data):
-        """Send alert for newly extinct player"""
+        """Send alert for newly extinct player (81+ only)"""
+        rating = player_data.get('rating', 0)
+        
+        # Double-check rating threshold before sending alert
+        if rating < 81:
+            print(f"⏭️ Skipping alert for {player_data.get('name')} ({rating}) - Below 81 rating threshold")
+            return
+        
         club_name = player_data.get('club', 'Unknown Club')
         position = player_data.get('position', 'Unknown')
         
-        message = f"EXTINCT: {player_data.get('name', 'Unknown')} ({player_data.get('rating', '?')}) - {club_name}"
+        message = f"🔥 EXTINCT: {player_data.get('name', 'Unknown')} ({player_data.get('rating', '?')}) - {club_name}"
         self.send_telegram_notification(message)
         
         if Config.DISCORD_WEBHOOK_URL:
@@ -777,7 +876,7 @@ class FutGGExtinctMonitor:
                 try:
                     discovered = self.discover_extinct_players()
                     print(f"Discovery thread: Found {discovered} new extinct players")
-                    time.sleep(1800)
+                    time.sleep(1800)  # 30 minutes between discovery runs
                 except Exception as e:
                     print(f"Discovery thread error: {e}")
                     time.sleep(300)
@@ -786,7 +885,10 @@ class FutGGExtinctMonitor:
         discovery.start()
         print("🔍 Discovery thread started")
         
+        # Initial discovery
         self.discover_extinct_players()
+        
+        # Start monitoring
         self.monitor_database_players()
     
     def run_complete_system(self):
