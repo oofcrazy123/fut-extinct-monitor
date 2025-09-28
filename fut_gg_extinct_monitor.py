@@ -168,12 +168,17 @@ class FutGGExtinctMonitor:
         page = 1
         consecutive_no_new_players = 0
         
+        # First pass: collect all players to detect duplicates
+        all_players = []
+        
+        print("📊 First pass: Collecting all players and club info to detect outdated transfers...")
+        
         while True:
             if max_pages and page > max_pages:
-                print(f"Reached maximum page limit ({max_pages}), stopping discovery")
+                print(f"Reached maximum page limit ({max_pages}), stopping collection")
                 break
             if page > 200:
-                print("Reached safety limit of 200 pages, stopping discovery")
+                print("Reached safety limit of 200 pages, stopping collection")
                 break
                 
             # Use the filtered URL for 81+ rating only
@@ -197,14 +202,14 @@ class FutGGExtinctMonitor:
                     print(f"Page {page}: No player links found (empty page)")
                     
                     if consecutive_no_new_players >= 3:
-                        print(f"Found 3 consecutive empty pages, stopping discovery at page {page}")
+                        print(f"Found 3 consecutive empty pages, stopping collection at page {page}")
                         break
                     
                     page += 1
                     time.sleep(random.uniform(1, 2))
                     continue
                 
-                page_discovered = 0
+                page_collected = 0
                 
                 for link in player_links:
                     try:
@@ -237,19 +242,33 @@ class FutGGExtinctMonitor:
                                 except ValueError:
                                     continue
                                 
-                                if self.store_extinct_player(player_name, rating, fut_gg_url):
-                                    discovered_count += 1
-                                    page_discovered += 1
+                                # Get basic club info from the link if possible
+                                club_hint = "Unknown"
+                                try:
+                                    # Try to get club from nearby elements or URL patterns
+                                    club_container = link.find_parent(['div', 'article']).find('img', alt=lambda x: x and any(club in str(x).lower() for club in ['psg', 'milan', 'madrid', 'barcelona', 'liverpool', 'city', 'united', 'arsenal', 'chelsea', 'tottenham']) if x)
+                                    if club_container and club_container != img:
+                                        club_hint = club_container.get('alt', 'Unknown')
+                                except:
+                                    pass
+                                
+                                all_players.append({
+                                    'name': player_name,
+                                    'rating': rating,
+                                    'url': fut_gg_url,
+                                    'club_hint': club_hint
+                                })
+                                page_collected += 1
                     
                     except Exception as e:
                         continue
                 
-                print(f"Page {page}: Discovered {page_discovered} new extinct players (81+ only)")
+                print(f"Page {page}: Collected {page_collected} players")
                 
-                if page_discovered == 0:
+                if page_collected == 0:
                     consecutive_no_new_players += 1
                     if consecutive_no_new_players >= 10:
-                        print(f"Found 10 consecutive pages with no new players, stopping discovery")
+                        print(f"Found 10 consecutive pages with no new players, stopping collection")
                         break
                 else:
                     consecutive_no_new_players = 0
@@ -258,13 +277,62 @@ class FutGGExtinctMonitor:
                 time.sleep(random.uniform(1, 2))
                 
             except Exception as e:
-                print(f"Error discovering extinct players on page {page}: {e}")
+                print(f"Error collecting players on page {page}: {e}")
                 consecutive_no_new_players += 1
                 page += 1
                 time.sleep(random.uniform(2, 4))
                 continue
         
-        print(f"🎯 Discovery complete! Found {discovered_count} new extinct players (81+) across {page-1} pages")
+        print(f"📊 Collection complete! Found {len(all_players)} total players across {page-1} pages")
+        
+        # Second pass: identify transfer duplicates and true duplicates
+        print("🔍 Second pass: Filtering out transfer duplicates and true duplicates...")
+        
+        # Group players by name+rating to find potential duplicates
+        name_rating_groups = {}
+        for player in all_players:
+            key = f"{player['name']}_{player['rating']}"
+            if key not in name_rating_groups:
+                name_rating_groups[key] = []
+            name_rating_groups[key].append(player)
+        
+        # Filter logic
+        unique_players = []
+        filtered_count = 0
+        transfer_filtered = []
+        
+        for key, players in name_rating_groups.items():
+            if len(players) == 1:
+                # No duplicates, keep it
+                unique_players.append(players[0])
+            else:
+                # Multiple players with same name+rating
+                # Check if they have different clubs (transfer situation)
+                
+                # For now, skip ALL duplicates regardless of club
+                # This avoids the PSG Donnarumma vs Milan Donnarumma issue
+                filtered_count += len(players)
+                if len(transfer_filtered) < 3:
+                    transfer_filtered.append(f"{players[0]['name']} ({players[0]['rating']}) - {len(players)} versions")
+        
+        if transfer_filtered:
+            print(f"⏭️ Filtering out transfer/duplicate cards: {', '.join(transfer_filtered)}")
+            if filtered_count > len(transfer_filtered):
+                print(f"⏭️ ...and {filtered_count - len(transfer_filtered)} more cards with multiple versions")
+        
+        print(f"✅ Filtered out {filtered_count} cards with multiple versions (transfer duplicates + true duplicates)")
+        print(f"📊 {len(unique_players)} unique players remain (only players with single versions)")
+        print(f"ℹ️  Note: This avoids outdated transfer cards like PSG Donnarumma that don't exist in-game")
+        
+        # Third pass: store unique players
+        print("💾 Third pass: Storing unique extinct players...")
+        
+        for player in unique_players:
+            if self.store_extinct_player(player['name'], player['rating'], player['url']):
+                discovered_count += 1
+                time.sleep(1)  # Small delay between storing players
+        
+        print(f"🎯 Discovery complete! Found {discovered_count} new unique extinct players (81+)")
         return discovered_count
 
     def get_additional_player_info(self, fut_gg_url):
@@ -337,6 +405,7 @@ class FutGGExtinctMonitor:
                 conn = sqlite3.connect(self.db_path, timeout=30.0)
                 cursor = conn.cursor()
                 
+                # Check if this exact URL already exists
                 cursor.execute('SELECT id FROM extinct_players WHERE fut_gg_url = ?', (fut_gg_url,))
                 if cursor.fetchone():
                     conn.close()
@@ -344,6 +413,7 @@ class FutGGExtinctMonitor:
                 
                 if rating < 81:
                     print(f"⏭️ Skipping {name} ({rating}) - Below 81 rating threshold")
+                    conn.close()
                     return False
                 
                 additional_info = {}
