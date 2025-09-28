@@ -77,8 +77,10 @@ class FutGGExtinctMonitor:
                     fut_gg_url TEXT UNIQUE NOT NULL,
                     status TEXT DEFAULT 'extinct',
                     first_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_on_filtered TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     status_changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    consecutive_missing_count INTEGER DEFAULT 0,
                     alert_sent BOOLEAN DEFAULT 0
                 )
             ''')
@@ -93,7 +95,8 @@ class FutGGExtinctMonitor:
             
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_url ON extinct_players(fut_gg_url)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_status ON extinct_players(status)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_checked ON extinct_players(last_checked)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_first_detected ON extinct_players(first_detected)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_last_seen ON extinct_players(last_seen_on_filtered)')
             
             conn.commit()
             
@@ -426,16 +429,15 @@ class FutGGExtinctMonitor:
             return None
 
     def monitor_database_players(self):
-        """Monitor by checking if players disappear from filtered URL (back in market)"""
+        """Monitor with time-based separation and conservative alerting"""
         while True:
             try:
-                print("🔍 Checking filtered URL to see which players are no longer extinct...")
+                print("🔍 Checking filtered URL with conservative monitoring...")
                 
-                # Get currently extinct players from filtered URL
+                # Get all currently extinct player URLs from filtered pages
                 current_extinct_urls = set()
                 
-                # Scan filtered pages to get all currently extinct player URLs
-                for page in range(1, 20):  # Check first 20 pages of filtered results
+                for page in range(1, 50):  # Increased scope to reduce false positives
                     try:
                         url = f"https://www.fut.gg/players/?page={page}&price__lte=0"
                         headers = {
@@ -454,7 +456,6 @@ class FutGGExtinctMonitor:
                             print(f"No more players on filtered page {page}, stopping scan")
                             break
                         
-                        # Collect all URLs currently on filtered pages
                         for link in player_links:
                             href = link.get('href', '')
                             if href and '/players/' in href:
@@ -464,7 +465,7 @@ class FutGGExtinctMonitor:
                                     fut_gg_url = href
                                 current_extinct_urls.add(fut_gg_url)
                         
-                        time.sleep(random.uniform(1, 2))
+                        time.sleep(random.uniform(0.5, 1.0))
                         
                     except Exception as e:
                         print(f"Error scanning filtered page {page}: {e}")
@@ -472,62 +473,83 @@ class FutGGExtinctMonitor:
                 
                 print(f"Found {len(current_extinct_urls)} players currently on filtered pages")
                 
-                # Get all players we're tracking in database
-                tracked_players = []
-                try:
-                    conn = sqlite3.connect(self.db_path, timeout=30.0)
-                    cursor = conn.cursor()
-                    
-                    cursor.execute('''
-                        SELECT id, name, rating, fut_gg_url, status
-                        FROM extinct_players 
-                        WHERE status = 'extinct'
-                    ''')
-                    
-                    tracked_players = cursor.fetchall()
-                    conn.close()
-                    
-                except Exception as e:
-                    print(f"Database error getting tracked players: {e}")
-                    time.sleep(60)
-                    continue
+                # Get tracked players that are old enough to monitor (30+ minutes old)
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
                 
-                # Find players that are in our database but NOT on current filtered pages
-                players_back_in_market = []
+                # Update last_seen_on_filtered for players still on filtered pages
+                cursor.execute('''
+                    UPDATE extinct_players 
+                    SET last_seen_on_filtered = CURRENT_TIMESTAMP, consecutive_missing_count = 0
+                    WHERE fut_gg_url IN ({})
+                '''.format(','.join('?' * len(current_extinct_urls))), list(current_extinct_urls))
                 
-                for player_id, name, rating, fut_gg_url, status in tracked_players:
+                # Get players eligible for monitoring (30+ minutes old)
+                cursor.execute('''
+                    SELECT id, name, rating, fut_gg_url, consecutive_missing_count, first_detected
+                    FROM extinct_players 
+                    WHERE status = 'extinct'
+                    AND datetime(first_detected, '+30 minutes') < datetime('now')
+                ''')
+                
+                eligible_players = cursor.fetchall()
+                conn.commit()
+                conn.close()
+                
+                print(f"Checking {len(eligible_players)} players (30+ minutes old)")
+                
+                # Check which eligible players are missing from current filtered pages
+                players_potentially_back = []
+                
+                for player_id, name, rating, fut_gg_url, missing_count, first_detected in eligible_players:
                     if fut_gg_url not in current_extinct_urls:
-                        # Player is no longer on filtered pages = back in market
-                        players_back_in_market.append({
+                        # Player missing from filtered pages
+                        new_missing_count = missing_count + 1
+                        players_potentially_back.append({
                             'id': player_id,
                             'name': name,
                             'rating': rating,
-                            'fut_gg_url': fut_gg_url
+                            'fut_gg_url': fut_gg_url,
+                            'missing_count': new_missing_count
                         })
-                
-                print(f"Found {len(players_back_in_market)} players back in market")
-                
-                # Remove players that are back in market and send alerts
-                for player in players_back_in_market:
-                    if self.remove_available_player(player['id']):
-                        print(f"✅ BACK TO MARKET (REMOVED): {player['name']} ({player['rating']})")
                         
-                        # Send availability alert
+                        # Update missing count
+                        conn = sqlite3.connect(self.db_path, timeout=30.0)
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                            UPDATE extinct_players 
+                            SET consecutive_missing_count = ?
+                            WHERE id = ?
+                        ''', (new_missing_count, player_id))
+                        conn.commit()
+                        conn.close()
+                
+                # Only alert if player has been missing for 3+ consecutive checks
+                confirmed_back_in_market = []
+                for player in players_potentially_back:
+                    if player['missing_count'] >= 3:
+                        confirmed_back_in_market.append(player)
+                        print(f"✅ CONFIRMED BACK TO MARKET: {player['name']} (missing {player['missing_count']} cycles)")
+                    else:
+                        print(f"⏳ Potentially back: {player['name']} (missing {player['missing_count']}/3 cycles)")
+                
+                # Remove confirmed players and send alerts
+                for player in confirmed_back_in_market:
+                    if self.remove_available_player(player['id']):
                         self.send_availability_alert({
                             'name': player['name'],
                             'rating': player['rating'],
                             'fut_gg_url': player['fut_gg_url']
                         })
                 
-                # Update last_checked for remaining extinct players
-                remaining_extinct = len(tracked_players) - len(players_back_in_market)
-                print(f"✅ Monitoring cycle complete: {len(players_back_in_market)} players back in market, {remaining_extinct} still extinct")
+                still_extinct = len(eligible_players) - len(confirmed_back_in_market)
+                print(f"✅ Conservative monitoring complete: {len(confirmed_back_in_market)} confirmed back in market, {still_extinct} still extinct")
                 
-                time.sleep(300)  # 5 minutes between cycles
+                time.sleep(600)  # 10 minutes between cycles (longer to be more conservative)
                 
             except Exception as e:
                 print(f"Error in monitoring cycle: {e}")
-                time.sleep(60)
+                time.sleep(120)
 
     def remove_available_player(self, player_id):
         """Remove player from database when they become available"""
