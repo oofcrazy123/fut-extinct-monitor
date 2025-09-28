@@ -268,11 +268,11 @@ class FutGGExtinctMonitor:
         return discovered_count
 
     def store_extinct_player(self, name, rating, fut_gg_url):
-        """Store extinct player in database with better error handling, return True if new"""
+        """Store extinct player in database with real-time verification, return True if new"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                conn = sqlite3.connect(self.db_path, timeout=30.0)  # Add timeout
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
                 cursor = conn.cursor()
                 
                 # Check if URL already exists
@@ -280,6 +280,17 @@ class FutGGExtinctMonitor:
                 if cursor.fetchone():
                     conn.close()
                     return False  # Already exists
+                
+                # REAL-TIME VERIFICATION: Check if player is actually extinct before storing
+                print(f"🔍 Verifying extinction status for {name}...")
+                is_extinct = self.check_url_extinction_status(fut_gg_url)
+                
+                if is_extinct is not True:
+                    print(f"❌ Verification failed: {name} is not extinct (status: {is_extinct})")
+                    conn.close()
+                    return False  # Not actually extinct
+                
+                print(f"✅ Verified: {name} is extinct")
                 
                 # Get additional player info (but don't let it slow down too much)
                 additional_info = {}
@@ -302,7 +313,7 @@ class FutGGExtinctMonitor:
                     conn.commit()
                     conn.close()
                     
-                    print(f"🔥 NEW EXTINCTION: {name} ({rating}) - {club_name}")
+                    print(f"🔥 VERIFIED EXTINCTION: {name} ({rating}) - {club_name}")
                     
                     # Send immediate extinction alert with enhanced info
                     self.send_extinction_alert({
@@ -321,7 +332,7 @@ class FutGGExtinctMonitor:
             except sqlite3.OperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
                     print(f"Database locked, retrying {attempt + 1}/{max_retries}...")
-                    time.sleep(random.uniform(0.5, 2.0))  # Random backoff
+                    time.sleep(random.uniform(0.5, 2.0))
                     continue
                 else:
                     print(f"Database error storing extinct player {name}: {e}")
@@ -335,6 +346,37 @@ class FutGGExtinctMonitor:
                     return False
             except Exception as e:
                 print(f"Error storing extinct player {name}: {e}")
+                return False
+        
+        return False
+
+    def remove_available_player(self, player_id):
+        """Remove player from database when they become available"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    DELETE FROM extinct_players 
+                    WHERE id = ?
+                ''', (player_id,))
+                
+                conn.commit()
+                conn.close()
+                return True
+                
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    print(f"Database locked during player removal, retrying {attempt + 1}/{max_retries}...")
+                    time.sleep(random.uniform(0.5, 2.0))
+                    continue
+                else:
+                    print(f"Database error removing available player: {e}")
+                    return False
+            except Exception as e:
+                print(f"Error removing available player: {e}")
                 return False
         
         return False
@@ -410,7 +452,7 @@ class FutGGExtinctMonitor:
                             FROM extinct_players 
                             WHERE status = 'extinct'
                             ORDER BY last_checked ASC
-                            LIMIT 100
+                            LIMIT 200
                         ''')
                         
                         extinct_players = cursor.fetchall()
@@ -442,8 +484,8 @@ class FutGGExtinctMonitor:
                     is_extinct = self.check_url_extinction_status(fut_gg_url)
                     
                     if is_extinct is False and current_status == 'extinct':
-                        # Player is back in market!
-                        if self.update_player_status(player_id, 'available'):
+                        # Player is back in market - remove from database since we only track extinct players
+                        if self.remove_available_player(player_id):
                             # Send availability alert
                             self.send_availability_alert({
                                 'name': name,
@@ -452,7 +494,7 @@ class FutGGExtinctMonitor:
                             })
                             
                             status_changes += 1
-                            print(f"✅ BACK TO MARKET: {name}")
+                            print(f"✅ BACK TO MARKET (REMOVED): {name}")
                         
                     elif is_extinct is True:
                         # Still extinct, just update last_checked
@@ -463,11 +505,11 @@ class FutGGExtinctMonitor:
                         # Uncertain status
                         print(f"❓ Uncertain status: {name}")
                     
-                    # Delay between checks
-                    time.sleep(random.uniform(4, 7))
+                    # Delay between checks (reduced for faster monitoring)
+                    time.sleep(random.uniform(2, 4))
                 
                 print(f"✅ Monitoring cycle complete: {status_changes} players back in market")
-                time.sleep(300)  # 5 minutes between cycles
+                time.sleep(180)  # 3 minutes between cycles (faster than 5 minutes)
                 
             except Exception as e:
                 print(f"Error in monitoring cycle: {e}")
