@@ -474,23 +474,110 @@ class FutGGExtinctMonitor:
                     time.sleep(300)
                     continue
                 
-                print(f"Checking {len(extinct_players)} extinct players...")
+    def get_player_priority(self, name, rating, club):
+        """Determine player priority for monitoring frequency"""
+        priority = 1  # Default priority
+        
+        # High priority for high ratings
+        if rating >= 90:
+            priority = 5  # Icons, top players
+        elif rating >= 85:
+            priority = 4  # High-rated players
+        elif rating >= 80:
+            priority = 3  # Good players
+        elif rating >= 75:
+            priority = 2  # Decent players
+        # rating < 75 stays at priority 1 (low)
+        
+        # Boost priority for meta/popular players
+        meta_keywords = ['messi', 'ronaldo', 'mbappe', 'haaland', 'vinicius', 'salah', 'neymar', 'lewa', 'benzema', 'modric', 'kane']
+        if any(keyword in name.lower() for keyword in meta_keywords):
+            priority += 2
+        
+        # Boost priority for popular clubs
+        top_clubs = ['real madrid', 'barcelona', 'manchester city', 'liverpool', 'bayern', 'psg', 'chelsea', 'arsenal']
+        if any(club_name in club.lower() for club_name in top_clubs):
+            priority += 1
+        
+        # Cap at maximum priority 5
+        return min(priority, 5)
+
+    def monitor_database_players(self):
+        """Monitor players in database with priority-based checking"""
+        while True:
+            try:
+                print("🔍 Checking database players with priority system...")
+                
+                # Get extinct players prioritized by importance and last_checked
+                extinct_players = []
+                max_retries = 3
+                
+                for attempt in range(max_retries):
+                    try:
+                        conn = sqlite3.connect(self.db_path, timeout=30.0)
+                        cursor = conn.cursor()
+                        
+                        # Get players with priority calculation - check high priority players more often
+                        cursor.execute('''
+                            SELECT id, name, rating, fut_gg_url, status, 
+                                   CASE 
+                                       WHEN rating >= 90 THEN 5
+                                       WHEN rating >= 85 THEN 4
+                                       WHEN rating >= 80 THEN 3
+                                       WHEN rating >= 75 THEN 2
+                                       ELSE 1
+                                   END as base_priority,
+                                   last_checked
+                            FROM extinct_players 
+                            WHERE status = 'extinct'
+                            ORDER BY 
+                                base_priority DESC,  -- High priority first
+                                last_checked ASC     -- Then by oldest checked
+                            LIMIT 150
+                        ''')
+                        
+                        rows = cursor.fetchall()
+                        extinct_players = [(row[0], row[1], row[2], row[3], row[4], row[5]) for row in rows]
+                        conn.close()
+                        break
+                        
+                    except sqlite3.OperationalError as e:
+                        if "database is locked" in str(e) and attempt < max_retries - 1:
+                            print(f"Database locked during read, retrying {attempt + 1}/{max_retries}...")
+                            time.sleep(random.uniform(1, 3))
+                            continue
+                        else:
+                            print(f"Database error during monitoring: {e}")
+                            time.sleep(60)
+                            break
+                
+                if not extinct_players:
+                    print("No extinct players to check in database")
+                    time.sleep(180)
+                    continue
+                
+                print(f"Checking {len(extinct_players)} extinct players (prioritized by rating/importance)...")
                 
                 status_changes = 0
+                high_priority_checked = 0
                 
-                for player_id, name, rating, fut_gg_url, current_status in extinct_players:
-                    print(f"Checking {name} ({rating})...")
+                for player_id, name, rating, fut_gg_url, current_status, priority in extinct_players:
+                    if rating >= 85:
+                        high_priority_checked += 1
+                    
+                    print(f"Checking {name} ({rating}) [Priority: {priority}]...")
                     
                     is_extinct = self.check_url_extinction_status(fut_gg_url)
                     
                     if is_extinct is False and current_status == 'extinct':
-                        # Player is back in market - remove from database since we only track extinct players
+                        # Player is back in market - remove from database
                         if self.remove_available_player(player_id):
-                            # Send availability alert
+                            # Send availability alert with priority context
                             self.send_availability_alert({
                                 'name': name,
                                 'rating': rating,
-                                'fut_gg_url': fut_gg_url
+                                'fut_gg_url': fut_gg_url,
+                                'priority': priority
                             })
                             
                             status_changes += 1
@@ -505,11 +592,19 @@ class FutGGExtinctMonitor:
                         # Uncertain status
                         print(f"❓ Uncertain status: {name}")
                     
-                    # Delay between checks (reduced for faster monitoring)
-                    time.sleep(random.uniform(2, 4))
+                    # Variable delay based on priority - faster for high priority players
+                    if rating >= 85:
+                        time.sleep(random.uniform(1, 2))  # Faster for high-rated
+                    else:
+                        time.sleep(random.uniform(2, 4))  # Normal speed for others
                 
                 print(f"✅ Monitoring cycle complete: {status_changes} players back in market")
-                time.sleep(180)  # 3 minutes between cycles (faster than 5 minutes)
+                print(f"📊 High-priority players (85+) checked: {high_priority_checked}")
+                time.sleep(180)  # 3 minutes between cycles
+                
+            except Exception as e:
+                print(f"Error in monitoring cycle: {e}")
+                time.sleep(60)
                 
             except Exception as e:
                 print(f"Error in monitoring cycle: {e}")
@@ -798,13 +893,178 @@ class FutGGExtinctMonitor:
         self.send_telegram_notification(message)
         self.send_discord_notification(message, title)
 
+    def analyze_market_context(self):
+        """Analyze extinction patterns for market insights"""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+            
+            # Get extinct players grouped by various categories
+            context = {}
+            
+            # Count by league
+            cursor.execute('''
+                SELECT 
+                    CASE 
+                        WHEN fut_gg_url LIKE '%premier-league%' THEN 'Premier League'
+                        WHEN fut_gg_url LIKE '%la-liga%' THEN 'La Liga'
+                        WHEN fut_gg_url LIKE '%serie-a%' THEN 'Serie A'
+                        WHEN fut_gg_url LIKE '%bundesliga%' THEN 'Bundesliga'
+                        WHEN fut_gg_url LIKE '%ligue-1%' THEN 'Ligue 1'
+                        ELSE 'Other'
+                    END as league,
+                    COUNT(*) as count
+                FROM extinct_players 
+                WHERE status = 'extinct'
+                GROUP BY league
+                ORDER BY count DESC
+            ''')
+            context['leagues'] = cursor.fetchall()
+            
+            # Count by rating ranges
+            cursor.execute('''
+                SELECT 
+                    CASE 
+                        WHEN rating >= 90 THEN '90+ (Icons/Elite)'
+                        WHEN rating >= 85 THEN '85-89 (High)'
+                        WHEN rating >= 80 THEN '80-84 (Good)'
+                        WHEN rating >= 75 THEN '75-79 (Decent)'
+                        ELSE '74- (Low)'
+                    END as rating_range,
+                    COUNT(*) as count
+                FROM extinct_players 
+                WHERE status = 'extinct'
+                GROUP BY rating_range
+                ORDER BY count DESC
+            ''')
+            context['ratings'] = cursor.fetchall()
+            
+            # Count by position (extract from fut_gg_url or name patterns)
+            cursor.execute('''
+                SELECT 
+                    CASE 
+                        WHEN name LIKE '%GK%' OR fut_gg_url LIKE '%goalkeeper%' THEN 'Goalkeepers'
+                        WHEN fut_gg_url LIKE '%defender%' OR name LIKE '%CB%' OR name LIKE '%LB%' OR name LIKE '%RB%' THEN 'Defenders'
+                        WHEN fut_gg_url LIKE '%midfielder%' OR name LIKE '%CM%' OR name LIKE '%CAM%' OR name LIKE '%CDM%' THEN 'Midfielders'
+                        WHEN fut_gg_url LIKE '%forward%' OR name LIKE '%ST%' OR name LIKE '%LW%' OR name LIKE '%RW%' THEN 'Forwards'
+                        ELSE 'Unknown Position'
+                    END as position_group,
+                    COUNT(*) as count
+                FROM extinct_players 
+                WHERE status = 'extinct'
+                GROUP BY position_group
+                ORDER BY count DESC
+            ''')
+            context['positions'] = cursor.fetchall()
+            
+            # Total count
+            cursor.execute('SELECT COUNT(*) FROM extinct_players WHERE status = "extinct"')
+            context['total'] = cursor.fetchone()[0]
+            
+            conn.close()
+            return context
+            
+        except Exception as e:
+            print(f"Error analyzing market context: {e}")
+            return None
+
+    def send_market_context_alert(self, context_data):
+        """Send market context insights"""
+        if not context_data or context_data['total'] == 0:
+            return
+        
+        # Build context message
+        message_parts = [f"📊 MARKET EXTINCTION REPORT ({context_data['total']} players extinct)"]
+        
+        # Top extinct leagues
+        if context_data['leagues']:
+            message_parts.append("\n🏆 LEAGUES:")
+            for league, count in context_data['leagues'][:3]:
+                if count > 0:
+                    message_parts.append(f"• {league}: {count} extinct")
+        
+        # Rating distribution
+        if context_data['ratings']:
+            message_parts.append("\n⭐ RATINGS:")
+            for rating_range, count in context_data['ratings']:
+                if count > 0:
+                    message_parts.append(f"• {rating_range}: {count}")
+        
+        # Position analysis
+        if context_data['positions']:
+            message_parts.append("\n⚽ POSITIONS:")
+            for position, count in context_data['positions']:
+                if count > 0 and position != 'Unknown Position':
+                    message_parts.append(f"• {position}: {count}")
+        
+        # Market insights
+        message_parts.append("\n💡 INSIGHTS:")
+        high_count = sum(1 for _, count in context_data['ratings'] if _ == '85-89 (High)' for count in [count] if count > 5)
+        if high_count:
+            message_parts.append("• High-rated player shortage detected")
+        
+        serie_a_count = next((count for league, count in context_data['leagues'] if league == 'Serie A'), 0)
+        if serie_a_count > 10:
+            message_parts.append("• Serie A extinctions high - possible SBC incoming")
+        
+        full_message = "\n".join(message_parts)
+        
+        # Send to Telegram
+        self.send_telegram_notification(full_message)
+        
+        # Send to Discord with enhanced formatting
+        if Config.DISCORD_WEBHOOK_URL:
+            embed = {
+                "title": "📊 Market Extinction Analysis",
+                "description": f"Current market overview: {context_data['total']} extinct players",
+                "color": 0x1f8b4c,
+                "timestamp": datetime.now().isoformat(),
+                "fields": []
+            }
+            
+            # Add league field
+            if context_data['leagues']:
+                league_text = "\n".join([f"{league}: {count}" for league, count in context_data['leagues'][:3] if count > 0])
+                embed["fields"].append({
+                    "name": "🏆 Top Extinct Leagues",
+                    "value": league_text or "None",
+                    "inline": True
+                })
+            
+            # Add rating field  
+            if context_data['ratings']:
+                rating_text = "\n".join([f"{rating}: {count}" for rating, count in context_data['ratings'] if count > 0])
+                embed["fields"].append({
+                    "name": "⭐ Rating Distribution", 
+                    "value": rating_text or "None",
+                    "inline": True
+                })
+            
+            payload = {"embeds": [embed]}
+            
+            try:
+                requests.post(Config.DISCORD_WEBHOOK_URL, json=payload)
+                print("✅ Market context alert sent to Discord")
+            except Exception as e:
+                print(f"Discord context error: {e}")
+
     def run_discovery_and_monitoring(self):
-        """Run discovery in separate thread, then start monitoring"""
+        """Enhanced discovery and monitoring with market context"""
         def discovery_thread():
+            context_alert_counter = 0
             while True:
                 try:
-                    discovered = self.discover_extinct_players()  # No page limit
+                    discovered = self.discover_extinct_players()
                     print(f"Discovery thread: Found {discovered} new extinct players")
+                    
+                    # Send market context alert every 3 discovery cycles (1.5 hours)
+                    context_alert_counter += 1
+                    if context_alert_counter >= 3:
+                        context_data = self.analyze_market_context()
+                        if context_data:
+                            self.send_market_context_alert(context_data)
+                        context_alert_counter = 0
+                    
                     time.sleep(1800)  # Run discovery every 30 minutes
                 except Exception as e:
                     print(f"Discovery thread error: {e}")
@@ -816,7 +1076,7 @@ class FutGGExtinctMonitor:
         print("🔍 Discovery thread started")
         
         # Run initial discovery
-        self.discover_extinct_players()  # No page limit
+        self.discover_extinct_players()
         
         # Start monitoring loop
         self.monitor_database_players()
